@@ -1,0 +1,452 @@
+package com.example.mobile3dstudio.ui
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.mobile3dstudio.core.model.EditorMode
+import com.example.mobile3dstudio.ui.scene.Scene3DViewport
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+@Composable
+fun Mobile3DStudioApp() {
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var imageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var mode by rememberSaveable { mutableStateOf(EditorMode.TWO_D) }
+
+    var positionX by rememberSaveable { mutableFloatStateOf(0f) }
+    var rotationX by rememberSaveable { mutableFloatStateOf(18f) }
+    var rotationY by rememberSaveable { mutableFloatStateOf(25f) }
+    var scaleFactor by rememberSaveable { mutableFloatStateOf(1f) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedUriText = uri.toString()
+            scope.launch { snackbarHostState.showSnackbar("图片已导入") }
+        }
+    }
+
+    LaunchedEffect(selectedUriText) {
+        val text = selectedUriText
+        imageBitmap = if (text == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                decodeScaledBitmap(context, Uri.parse(text))?.asImageBitmap()
+            }
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Header(
+                hasImage = selectedUriText != null,
+                onImport = {
+                    imagePicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                }
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(
+                    "从一张图片开始，逐步得到可编辑的空间对象。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "当前版本：基础框架 · 离线优先 · 无付费 API",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+
+            ModeSelector(selected = mode, onSelect = { mode = it })
+
+            when (mode) {
+                EditorMode.TWO_D -> TwoDWorkspace(
+                    imageBitmap = imageBitmap,
+                    onAction = { action ->
+                        scope.launch { snackbarHostState.showSnackbar("$action：功能接口已预留，尚未接入") }
+                    }
+                )
+                EditorMode.TWO_POINT_FIVE_D -> TwoPointFiveDWorkspace(
+                    imageBitmap = imageBitmap,
+                    onAction = {
+                        scope.launch { snackbarHostState.showSnackbar("深度估计与视差网格尚未接入") }
+                    }
+                )
+                EditorMode.THREE_D -> ThreeDWorkspace(
+                    positionX = positionX,
+                    rotationX = rotationX,
+                    rotationY = rotationY,
+                    scaleFactor = scaleFactor,
+                    onPositionChange = { positionX = it },
+                    onRotationXChange = { rotationX = it },
+                    onRotationYChange = { rotationY = it },
+                    onScaleChange = { scaleFactor = it },
+                    onExport = {
+                        scope.launch { snackbarHostState.showSnackbar("GLB 导出接口已定义，导出器尚未实现") }
+                    }
+                )
+            }
+
+            PipelineStatus()
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+}
+
+@Composable
+private fun Header(hasImage: Boolean, onImport: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "M3D STUDIO",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "IMAGE  /  DEPTH  /  3D",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Button(onClick = onImport) {
+            Text(if (hasImage) "更换图片" else "导入图片")
+        }
+    }
+}
+
+@Composable
+private fun ModeSelector(selected: EditorMode, onSelect: (EditorMode) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        EditorMode.entries.forEach { mode ->
+            FilterChip(
+                selected = selected == mode,
+                onClick = { onSelect(mode) },
+                label = {
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text(mode.title, fontWeight = FontWeight.SemiBold)
+                        Text(mode.subtitle, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun TwoDWorkspace(imageBitmap: ImageBitmap?, onAction: (String) -> Unit) {
+    WorkspaceCard(title = "2D 图片工作区", subtitle = "原图预览与基础图片处理入口") {
+        ImagePreview(imageBitmap = imageBitmap)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { onAction("裁剪") }, modifier = Modifier.weight(1f), enabled = imageBitmap != null) {
+                Text("裁剪")
+            }
+            OutlinedButton(onClick = { onAction("抠图") }, modifier = Modifier.weight(1f), enabled = imageBitmap != null) {
+                Text("抠图")
+            }
+            OutlinedButton(onClick = { onAction("分层") }, modifier = Modifier.weight(1f), enabled = imageBitmap != null) {
+                Text("分层")
+            }
+        }
+        Text(
+            "图片导入已实现。裁剪、主体抠图和图层编辑目前是功能入口，尚未执行实际图像处理。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun TwoPointFiveDWorkspace(imageBitmap: ImageBitmap?, onAction: () -> Unit) {
+    WorkspaceCard(title = "2.5D 深度工作区", subtitle = "为图片建立前后空间关系") {
+        ImagePreview(imageBitmap = imageBitmap)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("深度图", fontWeight = FontWeight.SemiBold)
+                Text("未生成", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+            Text("待接入", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
+        }
+        Button(onClick = onAction, enabled = imageBitmap != null, modifier = Modifier.fillMaxWidth()) {
+            Text("生成深度信息")
+        }
+        Text(
+            "此处不会用假深度图模拟结果。后续接入本地深度估计模型后，再生成视差网格和可调视角。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun ThreeDWorkspace(
+    positionX: Float,
+    rotationX: Float,
+    rotationY: Float,
+    scaleFactor: Float,
+    onPositionChange: (Float) -> Unit,
+    onRotationXChange: (Float) -> Unit,
+    onRotationYChange: (Float) -> Unit,
+    onScaleChange: (Float) -> Unit,
+    onExport: () -> Unit
+) {
+    WorkspaceCard(title = "3D 模型工作区", subtitle = "Filament 实时三维视口 · 手势旋转 / 缩放相机") {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(290.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Scene3DViewport(
+                modifier = Modifier.fillMaxSize(),
+                positionX = positionX,
+                rotationX = rotationX,
+                rotationY = rotationY,
+                scaleFactor = scaleFactor
+            )
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                shape = CircleShape
+            ) {
+                Text(
+                    "测试几何体 · 非图片重建结果",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        Text("模型变换", fontWeight = FontWeight.SemiBold)
+        TransformSlider("位置 X", positionX, -1f..1f, onPositionChange)
+        TransformSlider("旋转 X", rotationX, 0f..360f, onRotationXChange)
+        TransformSlider("旋转 Y", rotationY, 0f..360f, onRotationYChange)
+        TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                onPositionChange(0f)
+                onRotationXChange(18f)
+                onRotationYChange(25f)
+                onScaleChange(1f)
+            }, modifier = Modifier.weight(1f)) {
+                Text("重置变换")
+            }
+            Button(onClick = onExport, modifier = Modifier.weight(1f)) {
+                Text("导出 GLB")
+            }
+        }
+        Text(
+            "当前立方体由程序直接创建，证明真实三维视口和基本变换控制已接通。导入图片到真实网格重建、模型文件加载和 GLB 写出仍待开发。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun TransformSlider(
+    title: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(title, style = MaterialTheme.typography.bodySmall)
+            Text("${"%.2f".format(value)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+        }
+        Slider(value = value, onValueChange = onValueChange, valueRange = range)
+    }
+}
+
+@Composable
+private fun ImagePreview(imageBitmap: ImageBitmap?) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1.45f)
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageBitmap != null) {
+            Image(
+                bitmap = imageBitmap,
+                contentDescription = "导入的图片",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("＋", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.primary)
+                Text("尚未导入图片", fontWeight = FontWeight.SemiBold)
+                Text("点击右上角「导入图片」选择相册照片", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceCard(
+    title: String,
+    subtitle: String,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun PipelineStatus() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("处理流程", fontWeight = FontWeight.Bold)
+            val steps = listOf(
+                "图片导入" to true,
+                "主体识别" to false,
+                "主体分割" to false,
+                "深度估计" to false,
+                "真实 3D 重建" to false,
+                "GLB 导出" to false
+            )
+            steps.forEachIndexed { index, step ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (step.second) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(step.first, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (step.second) "已接通" else "待开发",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (step.second) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (index != steps.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            }
+        }
+    }
+}
+
+private fun decodeScaledBitmap(context: Context, uri: Uri, maxDimension: Int = 2048): Bitmap? {
+    return try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > maxDimension || bounds.outHeight / sampleSize > maxDimension) {
+            sampleSize *= 2
+        }
+
+        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+    } catch (_: Exception) {
+        null
+    }
+}
