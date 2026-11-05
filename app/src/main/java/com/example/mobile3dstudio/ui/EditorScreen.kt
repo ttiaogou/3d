@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -30,7 +32,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,7 +44,8 @@ import com.example.mobile3dstudio.ui.scene.Scene3DViewport
 
 /**
  * Main editor screen.
- * Header, mode selector, and workspace stay fixed. Only the parameter panel scrolls.
+ * Header, mode selector, and workspace stay fixed. The 3D parameter panel
+ * scrolls independently; modes without adjustable parameters use the full workspace.
  */
 @Composable
 fun EditorScreen(
@@ -75,7 +77,6 @@ fun EditorScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Keep the header and workspace fixed while the parameter list scrolls independently.
             val parameterPanelHeight = when {
                 maxHeight >= 680.dp -> 276.dp
                 maxHeight >= 560.dp -> 260.dp
@@ -117,22 +118,25 @@ fun EditorScreen(
                     }
                 }
 
-                ParameterPanel(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(parameterPanelHeight),
-                    mode = mode,
-                    positionX = positionX,
-                    rotationX = rotationX,
-                    rotationY = rotationY,
-                    scaleFactor = scaleFactor,
-                    onPositionChange = onPositionChange,
-                    onRotationXChange = onRotationXChange,
-                    onRotationYChange = onRotationYChange,
-                    onScaleChange = onScaleChange,
-                    onResetTransforms = onResetTransforms,
-                    onExport = onExport
-                )
+                // Only show a parameter panel when this mode has real adjustable parameters.
+                // 2D and 2.5D currently have none, so their workspace receives the freed height.
+                if (mode == EditorMode.THREE_D) {
+                    ParameterPanel(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(parameterPanelHeight),
+                        positionX = positionX,
+                        rotationX = rotationX,
+                        rotationY = rotationY,
+                        scaleFactor = scaleFactor,
+                        onPositionChange = onPositionChange,
+                        onRotationXChange = onRotationXChange,
+                        onRotationYChange = onRotationYChange,
+                        onScaleChange = onScaleChange,
+                        onResetTransforms = onResetTransforms,
+                        onExport = onExport
+                    )
+                }
             }
         }
     }
@@ -295,7 +299,6 @@ private fun ThreeDWorkspace(
 @Composable
 private fun ParameterPanel(
     modifier: Modifier = Modifier,
-    mode: EditorMode,
     positionX: Float,
     rotationX: Float,
     rotationY: Float,
@@ -324,59 +327,38 @@ private fun ParameterPanel(
                 fontWeight = FontWeight.Bold
             )
 
-            // Reset the list position when the editing mode changes.
-            key(mode) {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    state = rememberLazyListState(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    when (mode) {
-                        EditorMode.THREE_D -> {
-                            item(key = "position-x") {
-                                TransformSlider("位置 X", positionX, -1f..1f, onPositionChange)
-                            }
-                            item(key = "rotation-x") {
-                                TransformSlider("旋转 X", rotationX, 0f..360f, onRotationXChange)
-                            }
-                            item(key = "rotation-y") {
-                                TransformSlider("旋转 Y", rotationY, 0f..360f, onRotationYChange)
-                            }
-                            item(key = "scale") {
-                                TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
-                            }
-                            item(key = "transform-actions") {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(
-                                        onClick = onResetTransforms,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("重置变换")
-                                    }
-                                    Button(
-                                        onClick = onExport,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("导出 GLB")
-                                    }
-                                }
-                            }
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                state = rememberLazyListState(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item(key = "position-x") {
+                    TransformSlider("位置 X", positionX, -1f..1f, onPositionChange)
+                }
+                item(key = "rotation-x") {
+                    TransformSlider("旋转 X", rotationX, 0f..360f, onRotationXChange)
+                }
+                item(key = "rotation-y") {
+                    TransformSlider("旋转 Y", rotationY, 0f..360f, onRotationYChange)
+                }
+                item(key = "scale") {
+                    TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
+                }
+                item(key = "transform-actions") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onResetTransforms,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("重置变换")
                         }
-
-                        EditorMode.TWO_D,
-                        EditorMode.TWO_POINT_FIVE_D -> {
-                            item(key = "empty-parameters") {
-                                Text(
-                                    "当前模式暂无可调参数，相关功能接入后会显示在这里。",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 8.dp)
-                                )
-                            }
+                        Button(
+                            onClick = onExport,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("导出 GLB")
                         }
                     }
                 }
