@@ -1,13 +1,10 @@
 package com.example.mobile3dstudio.ui
-
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -17,9 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -444,52 +438,13 @@ private fun ImagePreview(
         contentAlignment = Alignment.Center
     ) {
         if (imageBitmap != null) {
-            val imageAspectRatio = imageBitmap.width.toFloat() / imageBitmap.height.toFloat()
-
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val viewportAspectRatio = if (maxHeight > 0.dp) {
-                    maxWidth / maxHeight
-                } else {
-                    imageAspectRatio
-                }
-
-                if (imageAspectRatio <= viewportAspectRatio) {
-                    // Portrait image: fill the viewport width and scroll vertically
-                    // inside the image viewport to reach the complete original image.
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Image(
-                            bitmap = imageBitmap,
-                            contentDescription = "导入的图片",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(imageAspectRatio),
-                            contentScale = ContentScale.FillBounds
-                        )
-                    }
-                } else {
-                    // Landscape image: fill the viewport height and scroll horizontally
-                    // rather than shrinking it or distorting its proportions.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Image(
-                            bitmap = imageBitmap,
-                            contentDescription = "导入的图片",
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .aspectRatio(imageAspectRatio),
-                            contentScale = ContentScale.FillBounds
-                        )
-                    }
-                }
-            }
+            Image(
+                bitmap = imageBitmap,
+                contentDescription = "导入的图片",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.Center
+            )
         } else {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
