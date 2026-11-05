@@ -4,61 +4,50 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.Size
-import io.github.sceneview.node.CubeNode
 import io.github.sceneview.node.ImageNode
 import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberEngine
-import io.github.sceneview.rememberMaterialLoader
 
-/** A single 3D workspace. Imported images are placed in the scene as textured planes. */
+/** Displays the imported bitmap as a correctly proportioned textured plane in 3D space. */
 @Composable
 fun Scene3DViewport(
     modifier: Modifier = Modifier,
-    imageBitmap: Bitmap?,
+    imageBitmap: Bitmap,
     imageScale: Float,
     imageOffsetX: Float,
     imageOffsetY: Float,
-    imageRotation: Float
+    rotationX: Float,
+    rotationY: Float,
+    rotationZ: Float
 ) {
     val engine = rememberEngine()
-    val materialLoader = rememberMaterialLoader(engine)
-    val cubeMaterial = remember(materialLoader) {
-        materialLoader.createColorInstance(
-            Color(0xFF9CB8FF),
-            metallic = 0.08f,
-            roughness = 0.42f
-        )
-    }
     val cameraManipulator = rememberCameraManipulator()
+
+    // ImageNode's longest edge is one world unit. Specify both dimensions explicitly
+    // so portrait and landscape images always retain the decoded bitmap aspect ratio.
+    val aspectRatio = imageBitmap.width.toFloat() / imageBitmap.height.toFloat()
+    val planeWidth = if (aspectRatio >= 1f) 1f else aspectRatio
+    val planeHeight = if (aspectRatio >= 1f) 1f / aspectRatio else 1f
 
     Box(modifier = modifier) {
         SceneView(
             modifier = Modifier.fillMaxSize(),
             engine = engine,
-            cameraManipulator = if (imageBitmap == null) cameraManipulator else null
+            cameraManipulator = cameraManipulator
         ) {
-            if (imageBitmap != null) {
-                ImageNode(
-                    bitmap = imageBitmap,
-                    position = Position(imageOffsetX, imageOffsetY, 0f),
-                    rotation = Rotation(0f, 0f, imageRotation),
-                    scale = Scale(imageScale)
-                )
-            } else {
-                CubeNode(
-                    size = Size(0.85f, 0.85f, 0.85f),
-                    rotation = Rotation(18f, 25f, 0f),
-                    materialInstance = cubeMaterial
-                )
-            }
+            ImageNode(
+                bitmap = imageBitmap,
+                size = Size(planeWidth, planeHeight),
+                position = Position(imageOffsetX * 1.5f, imageOffsetY * 1.5f, 0f),
+                rotation = Rotation(rotationX, rotationY, rotationZ),
+                scale = Scale(imageScale)
+            )
         }
     }
 }
