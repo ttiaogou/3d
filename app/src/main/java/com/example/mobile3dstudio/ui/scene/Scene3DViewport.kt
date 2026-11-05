@@ -14,7 +14,7 @@ import io.github.sceneview.node.ImageNode
 import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberEngine
 
-/** Displays the imported bitmap as a correctly proportioned textured plane in 3D space. */
+/** Displays a bitmap as a textured plane with the bitmap's exact aspect ratio. */
 @Composable
 fun Scene3DViewport(
     modifier: Modifier = Modifier,
@@ -29,8 +29,6 @@ fun Scene3DViewport(
     val engine = rememberEngine()
     val cameraManipulator = rememberCameraManipulator()
 
-    // ImageNode's longest edge is one world unit. Specify both dimensions explicitly
-    // so portrait and landscape images always retain the decoded bitmap aspect ratio.
     val aspectRatio = imageBitmap.width.toFloat() / imageBitmap.height.toFloat()
     val planeWidth = if (aspectRatio >= 1f) 1f else aspectRatio
     val planeHeight = if (aspectRatio >= 1f) 1f / aspectRatio else 1f
