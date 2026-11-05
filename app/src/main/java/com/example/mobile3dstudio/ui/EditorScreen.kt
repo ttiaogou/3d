@@ -4,20 +4,21 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -32,6 +33,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,9 +45,8 @@ import com.example.mobile3dstudio.core.model.EditorMode
 import com.example.mobile3dstudio.ui.scene.Scene3DViewport
 
 /**
- * Main visual screen for the editor.
- * Keep the page layout and reusable UI components together in this file.
- * Editor state and business callbacks are supplied by Mobile3DStudioApp.
+ * Main editor screen.
+ * Header, mode selector, and workspace stay fixed. Only the parameter panel scrolls.
  */
 @Composable
 fun EditorScreen(
@@ -72,29 +73,59 @@ fun EditorScreen(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Header(hasImage = hasImage, onImport = onImport)
-            ModeSelector(selected = mode, onSelect = onModeSelect)
+            // Leave room for the fixed header and workspace while keeping three
+            // complete transform controls visible on normal phone-sized screens.
+            val parameterPanelHeight = when {
+                maxHeight >= 680.dp -> 276.dp
+                maxHeight >= 560.dp -> 260.dp
+                maxHeight >= 440.dp -> 232.dp
+                else -> maxHeight * 0.46f
+            }
 
-            when (mode) {
-                EditorMode.TWO_D -> TwoDWorkspace(
-                    imageBitmap = imageBitmap,
-                    onAction = onTwoDAction
-                )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Header(hasImage = hasImage, onImport = onImport)
+                ModeSelector(selected = mode, onSelect = onModeSelect)
 
-                EditorMode.TWO_POINT_FIVE_D -> TwoPointFiveDWorkspace(
-                    imageBitmap = imageBitmap,
-                    onAction = onTwoPointFiveDAction
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    when (mode) {
+                        EditorMode.TWO_D -> TwoDWorkspace(
+                            imageBitmap = imageBitmap,
+                            onAction = onTwoDAction
+                        )
 
-                EditorMode.THREE_D -> ThreeDWorkspace(
+                        EditorMode.TWO_POINT_FIVE_D -> TwoPointFiveDWorkspace(
+                            imageBitmap = imageBitmap,
+                            onAction = onTwoPointFiveDAction
+                        )
+
+                        EditorMode.THREE_D -> ThreeDWorkspace(
+                            positionX = positionX,
+                            rotationX = rotationX,
+                            rotationY = rotationY,
+                            scaleFactor = scaleFactor
+                        )
+                    }
+                }
+
+                ParameterPanel(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(parameterPanelHeight),
+                    mode = mode,
                     positionX = positionX,
                     rotationX = rotationX,
                     rotationY = rotationY,
@@ -107,9 +138,6 @@ fun EditorScreen(
                     onExport = onExport
                 )
             }
-
-            PipelineStatus()
-            Spacer(Modifier.height(10.dp))
         }
     }
 }
@@ -155,7 +183,12 @@ private fun TwoDWorkspace(imageBitmap: ImageBitmap?, onAction: (String) -> Unit)
         title = "2D 图片工作区",
         subtitle = "原图预览与基础图片处理入口"
     ) {
-        ImagePreview(imageBitmap = imageBitmap)
+        ImagePreview(
+            imageBitmap = imageBitmap,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = { onAction("裁剪") },
@@ -193,7 +226,12 @@ private fun TwoPointFiveDWorkspace(imageBitmap: ImageBitmap?, onAction: () -> Un
         title = "2.5D 深度工作区",
         subtitle = "为图片建立前后空间关系"
     ) {
-        ImagePreview(imageBitmap = imageBitmap)
+        ImagePreview(
+            imageBitmap = imageBitmap,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -233,19 +271,13 @@ private fun ThreeDWorkspace(
     positionX: Float,
     rotationX: Float,
     rotationY: Float,
-    scaleFactor: Float,
-    onPositionChange: (Float) -> Unit,
-    onRotationXChange: (Float) -> Unit,
-    onRotationYChange: (Float) -> Unit,
-    onScaleChange: (Float) -> Unit,
-    onResetTransforms: () -> Unit,
-    onExport: () -> Unit
+    scaleFactor: Float
 ) {
     WorkspaceCard(title = "3D 模型工作区", subtitle = null) {
         Box(
             modifier = Modifier
+                .weight(1f)
                 .fillMaxWidth()
-                .height(290.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
@@ -257,7 +289,9 @@ private fun ThreeDWorkspace(
                 scaleFactor = scaleFactor
             )
             Surface(
-                modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
                 shape = CircleShape
             ) {
@@ -269,32 +303,108 @@ private fun ThreeDWorkspace(
                 )
             }
         }
-
-        Text("模型变换", fontWeight = FontWeight.SemiBold)
-        TransformSlider("位置 X", positionX, -1f..1f, onPositionChange)
-        TransformSlider("旋转 X", rotationX, 0f..360f, onRotationXChange)
-        TransformSlider("旋转 Y", rotationY, 0f..360f, onRotationYChange)
-        TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = onResetTransforms,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("重置变换")
-            }
-            Button(
-                onClick = onExport,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("导出 GLB")
-            }
-        }
         Text(
             "当前立方体由程序直接创建，证明真实三维视口和基本变换控制已接通。导入图片到真实网格重建、模型文件加载和 GLB 写出仍待开发。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun ParameterPanel(
+    modifier: Modifier = Modifier,
+    mode: EditorMode,
+    positionX: Float,
+    rotationX: Float,
+    rotationY: Float,
+    scaleFactor: Float,
+    onPositionChange: (Float) -> Unit,
+    onRotationXChange: (Float) -> Unit,
+    onRotationYChange: (Float) -> Unit,
+    onScaleChange: (Float) -> Unit,
+    onResetTransforms: () -> Unit,
+    onExport: () -> Unit
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                "参数调整",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            // A fresh list state per mode starts at the first parameter after switching modes.
+            key(mode) {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    state = rememberLazyListState(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    when (mode) {
+                        EditorMode.THREE_D -> {
+                            item(key = "position-x") {
+                                TransformSlider("位置 X", positionX, -1f..1f, onPositionChange)
+                            }
+                            item(key = "rotation-x") {
+                                TransformSlider("旋转 X", rotationX, 0f..360f, onRotationXChange)
+                            }
+                            item(key = "rotation-y") {
+                                TransformSlider("旋转 Y", rotationY, 0f..360f, onRotationYChange)
+                            }
+                            item(key = "scale") {
+                                TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
+                            }
+                            item(key = "transform-actions") {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = onResetTransforms,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("重置变换")
+                                    }
+                                    Button(
+                                        onClick = onExport,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("导出 GLB")
+                                    }
+                                }
+                            }
+                        }
+
+                        EditorMode.TWO_D,
+                        EditorMode.TWO_POINT_FIVE_D -> {
+                            item(key = "empty-parameters") {
+                                Text(
+                                    "当前模式暂无可调参数，相关功能接入后会显示在这里。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    item(key = "pipeline-status") {
+                        PipelineStatus()
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -317,20 +427,21 @@ private fun TransformSlider(
                 color = MaterialTheme.colorScheme.secondary
             )
         }
-        Slider(value = value, onValueChange = onValueChange, valueRange = range)
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = range
+        )
     }
 }
 
 @Composable
-private fun ImagePreview(imageBitmap: ImageBitmap?) {
-    val previewAspectRatio = imageBitmap?.let {
-        it.width.toFloat() / it.height.toFloat()
-    } ?: 1.45f
-
+private fun ImagePreview(
+    imageBitmap: ImageBitmap?,
+    modifier: Modifier = Modifier
+) {
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(previewAspectRatio)
+        modifier = modifier
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
@@ -367,16 +478,18 @@ private fun ImagePreview(imageBitmap: ImageBitmap?) {
 private fun WorkspaceCard(
     title: String,
     subtitle: String?,
-    content: @Composable () -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxSize(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(24.dp)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -398,10 +511,10 @@ private fun PipelineStatus() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(18.dp)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("处理流程", fontWeight = FontWeight.Bold)
