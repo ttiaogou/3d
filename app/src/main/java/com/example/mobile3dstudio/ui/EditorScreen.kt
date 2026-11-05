@@ -2,6 +2,7 @@ package com.example.mobile3dstudio.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -13,16 +14,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -32,6 +33,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,11 +47,6 @@ import androidx.compose.ui.unit.dp
 import com.example.mobile3dstudio.core.model.EditorMode
 import com.example.mobile3dstudio.ui.scene.Scene3DViewport
 
-/**
- * Main editor screen.
- * Header, mode selector, and workspace stay fixed. The 3D parameter panel
- * scrolls independently; modes without adjustable parameters use the full workspace.
- */
 @Composable
 fun EditorScreen(
     snackbarHostState: SnackbarHostState,
@@ -54,6 +54,7 @@ fun EditorScreen(
     imageBitmap: ImageBitmap?,
     mode: EditorMode,
     onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
     onModeSelect: (EditorMode) -> Unit,
     positionX: Float,
     rotationX: Float,
@@ -66,7 +67,7 @@ fun EditorScreen(
     onResetTransforms: () -> Unit,
     onTwoDAction: (String) -> Unit,
     onTwoPointFiveDAction: () -> Unit,
-    onExport: () -> Unit
+    onExport: (String) -> Unit
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -87,11 +88,14 @@ fun EditorScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Header(hasImage = hasImage, onImport = onImport)
-                ModeSelector(selected = mode, onSelect = onModeSelect)
+                EditorTopBar(
+                    mode = mode,
+                    onModeSelect = onModeSelect,
+                    onExport = onExport
+                )
 
                 Box(
                     modifier = Modifier
@@ -100,16 +104,25 @@ fun EditorScreen(
                 ) {
                     when (mode) {
                         EditorMode.TWO_D -> TwoDWorkspace(
+                            hasImage = hasImage,
                             imageBitmap = imageBitmap,
+                            onImport = onImport,
+                            onRemoveImage = onRemoveImage,
                             onAction = onTwoDAction
                         )
 
                         EditorMode.TWO_POINT_FIVE_D -> TwoPointFiveDWorkspace(
+                            hasImage = hasImage,
                             imageBitmap = imageBitmap,
+                            onImport = onImport,
+                            onRemoveImage = onRemoveImage,
                             onAction = onTwoPointFiveDAction
                         )
 
                         EditorMode.THREE_D -> ThreeDWorkspace(
+                            hasImage = hasImage,
+                            onImport = onImport,
+                            onRemoveImage = onRemoveImage,
                             positionX = positionX,
                             rotationX = rotationX,
                             rotationY = rotationY,
@@ -118,8 +131,6 @@ fun EditorScreen(
                     }
                 }
 
-                // Only show a parameter panel when this mode has real adjustable parameters.
-                // 2D and 2.5D currently have none, so their workspace receives the freed height.
                 if (mode == EditorMode.THREE_D) {
                     ParameterPanel(
                         modifier = Modifier
@@ -133,8 +144,7 @@ fun EditorScreen(
                         onRotationXChange = onRotationXChange,
                         onRotationYChange = onRotationYChange,
                         onScaleChange = onScaleChange,
-                        onResetTransforms = onResetTransforms,
-                        onExport = onExport
+                        onResetTransforms = onResetTransforms
                     )
                 }
             }
@@ -143,48 +153,70 @@ fun EditorScreen(
 }
 
 @Composable
-private fun Header(hasImage: Boolean, onImport: () -> Unit) {
+private fun EditorTopBar(
+    mode: EditorMode,
+    onModeSelect: (EditorMode) -> Unit,
+    onExport: (String) -> Unit
+) {
+    var exportExpanded by remember { mutableStateOf(false) }
+    val exportFormats = when (mode) {
+        EditorMode.TWO_D -> listOf("PNG", "JPEG")
+        EditorMode.TWO_POINT_FIVE_D -> listOf("GLB", "深度 PNG")
+        EditorMode.THREE_D -> listOf("GLB")
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Spacer(Modifier.weight(1f))
-        Button(onClick = onImport) {
-            Text(if (hasImage) "更换图片" else "导入图片")
-        }
-    }
-}
-
-@Composable
-private fun ModeSelector(
-    selected: EditorMode,
-    onSelect: (EditorMode) -> Unit
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        EditorMode.entries.forEach { mode ->
+        EditorMode.entries.forEach { item ->
             FilterChip(
-                selected = selected == mode,
-                onClick = { onSelect(mode) },
-                label = {
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(mode.title, fontWeight = FontWeight.SemiBold)
-                        Text(mode.subtitle, style = MaterialTheme.typography.labelSmall)
-                    }
-                }
+                modifier = Modifier.weight(1f),
+                selected = mode == item,
+                onClick = { onModeSelect(item) },
+                label = { Text(item.title, fontWeight = FontWeight.SemiBold) }
             )
         }
+
+        Box {
+            OutlinedButton(onClick = { exportExpanded = true }) {
+                Text("导出")
+            }
+            DropdownMenu(
+                expanded = exportExpanded,
+                onDismissRequest = { exportExpanded = false }
+            ) {
+                exportFormats.forEach { format ->
+                    DropdownMenuItem(
+                        text = { Text(format) },
+                        onClick = {
+                            exportExpanded = false
+                            onExport(format)
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun TwoDWorkspace(imageBitmap: ImageBitmap?, onAction: (String) -> Unit) {
+private fun TwoDWorkspace(
+    hasImage: Boolean,
+    imageBitmap: ImageBitmap?,
+    onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
+    onAction: (String) -> Unit
+) {
     WorkspaceCard(
-        title = "2D 图片工作区",
-        subtitle = "原图预览与基础图片处理入口"
+        hasImage = hasImage,
+        onImport = onImport,
+        onRemoveImage = onRemoveImage
     ) {
         ImagePreview(
             imageBitmap = imageBitmap,
+            onEmptyClick = onImport,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -216,13 +248,21 @@ private fun TwoDWorkspace(imageBitmap: ImageBitmap?, onAction: (String) -> Unit)
 }
 
 @Composable
-private fun TwoPointFiveDWorkspace(imageBitmap: ImageBitmap?, onAction: () -> Unit) {
+private fun TwoPointFiveDWorkspace(
+    hasImage: Boolean,
+    imageBitmap: ImageBitmap?,
+    onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
+    onAction: () -> Unit
+) {
     WorkspaceCard(
-        title = "2.5D 深度工作区",
-        subtitle = "为图片建立前后空间关系"
+        hasImage = hasImage,
+        onImport = onImport,
+        onRemoveImage = onRemoveImage
     ) {
         ImagePreview(
             imageBitmap = imageBitmap,
+            onEmptyClick = onImport,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -258,12 +298,19 @@ private fun TwoPointFiveDWorkspace(imageBitmap: ImageBitmap?, onAction: () -> Un
 
 @Composable
 private fun ThreeDWorkspace(
+    hasImage: Boolean,
+    onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
     positionX: Float,
     rotationX: Float,
     rotationY: Float,
     scaleFactor: Float
 ) {
-    WorkspaceCard(title = "3D 模型工作区", subtitle = null) {
+    WorkspaceCard(
+        hasImage = hasImage,
+        onImport = onImport,
+        onRemoveImage = onRemoveImage
+    ) {
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -278,20 +325,6 @@ private fun ThreeDWorkspace(
                 rotationY = rotationY,
                 scaleFactor = scaleFactor
             )
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-                shape = CircleShape
-            ) {
-                Text(
-                    "测试几何体 · 非图片重建结果",
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
         }
     }
 }
@@ -307,8 +340,7 @@ private fun ParameterPanel(
     onRotationXChange: (Float) -> Unit,
     onRotationYChange: (Float) -> Unit,
     onScaleChange: (Float) -> Unit,
-    onResetTransforms: () -> Unit,
-    onExport: () -> Unit
+    onResetTransforms: () -> Unit
 ) {
     Card(
         modifier = modifier,
@@ -326,7 +358,6 @@ private fun ParameterPanel(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -347,19 +378,11 @@ private fun ParameterPanel(
                     TransformSlider("缩放", scaleFactor, 0.35f..1.8f, onScaleChange)
                 }
                 item(key = "transform-actions") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = onResetTransforms,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("重置变换")
-                        }
-                        Button(
-                            onClick = onExport,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("导出 GLB")
-                        }
+                    OutlinedButton(
+                        onClick = onResetTransforms,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("重置变换")
                     }
                 }
             }
@@ -386,23 +409,21 @@ private fun TransformSlider(
                 color = MaterialTheme.colorScheme.secondary
             )
         }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = range
-        )
+        Slider(value = value, onValueChange = onValueChange, valueRange = range)
     }
 }
 
 @Composable
 private fun ImagePreview(
     imageBitmap: ImageBitmap?,
+    onEmptyClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(enabled = imageBitmap == null, onClick = onEmptyClick),
         contentAlignment = Alignment.Center
     ) {
         if (imageBitmap != null) {
@@ -423,11 +444,6 @@ private fun ImagePreview(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text("尚未导入图片", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "点击右上角「导入图片」选择相册照片",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
     }
@@ -435,8 +451,9 @@ private fun ImagePreview(
 
 @Composable
 private fun WorkspaceCard(
-    title: String,
-    subtitle: String?,
+    hasImage: Boolean,
+    onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
@@ -444,23 +461,72 @@ private fun WorkspaceCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(24.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                content = content
+            )
+            WorkspaceImageMenu(
+                hasImage = hasImage,
+                onImport = onImport,
+                onRemoveImage = onRemoveImage,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceImageMenu(
+    hasImage: Boolean,
+    onImport: () -> Unit,
+    onRemoveImage: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                subtitle?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            IconButton(onClick = { expanded = true }) {
+                Text("⋮", style = MaterialTheme.typography.titleLarge)
             }
-            content()
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            if (hasImage) {
+                DropdownMenuItem(
+                    text = { Text("更换图片") },
+                    onClick = {
+                        expanded = false
+                        onImport()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("移除图片") },
+                    onClick = {
+                        expanded = false
+                        onRemoveImage()
+                    }
+                )
+            } else {
+                DropdownMenuItem(
+                    text = { Text("导入图片") },
+                    onClick = {
+                        expanded = false
+                        onImport()
+                    }
+                )
+            }
         }
     }
 }

@@ -25,10 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Owns editor state, image import/decode work, and the callbacks passed to the UI.
- * Visual layout and reusable UI components live in EditorScreen.kt.
- */
+/** Owns editor state, image import/decode work, and callbacks passed to the UI. */
 @Composable
 fun Mobile3DStudioApp() {
     val context = LocalContext.current
@@ -74,6 +71,10 @@ fun Mobile3DStudioApp() {
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
             )
         },
+        onRemoveImage = {
+            selectedUriText = null
+            imageBitmap = null
+        },
         onModeSelect = { mode = it },
         positionX = positionX,
         rotationX = rotationX,
@@ -99,9 +100,14 @@ fun Mobile3DStudioApp() {
                 snackbarHostState.showSnackbar("深度估计与视差网格尚未接入")
             }
         },
-        onExport = {
+        onExport = { format ->
             scope.launch {
-                snackbarHostState.showSnackbar("GLB 导出接口已定义，导出器尚未实现")
+                val message = if (format == "GLB") {
+                    "GLB 导出接口已定义，导出器尚未实现"
+                } else {
+                    "$format 导出功能尚未接入"
+                }
+                snackbarHostState.showSnackbar(message)
             }
         }
     )
