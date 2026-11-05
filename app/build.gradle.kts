@@ -38,6 +38,9 @@ dependencies {
     implementation("androidx.compose.foundation:foundation:1.12.1")
     implementation("androidx.compose.material3:material3:1.4.0")
 
+    // Reads EXIF orientation so camera photos are displayed upright.
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+
     // Real-time Android 3D rendering (Filament-based).
     implementation("io.github.sceneview:sceneview:4.65.0")
 
