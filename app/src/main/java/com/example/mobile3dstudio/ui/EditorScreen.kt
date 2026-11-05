@@ -13,8 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -23,7 +21,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -78,8 +75,7 @@ fun EditorScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Leave room for the fixed header and workspace while keeping three
-            // complete transform controls visible on normal phone-sized screens.
+            // Keep the header and workspace fixed while the parameter list scrolls independently.
             val parameterPanelHeight = when {
                 maxHeight >= 680.dp -> 276.dp
                 maxHeight >= 560.dp -> 260.dp
@@ -212,11 +208,6 @@ private fun TwoDWorkspace(imageBitmap: ImageBitmap?, onAction: (String) -> Unit)
                 Text("分层")
             }
         }
-        Text(
-            "图片导入已实现。裁剪、主体抠图和图层编辑目前是功能入口，尚未执行实际图像处理。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -258,11 +249,6 @@ private fun TwoPointFiveDWorkspace(imageBitmap: ImageBitmap?, onAction: () -> Un
         ) {
             Text("生成深度信息")
         }
-        Text(
-            "此处不会用假深度图模拟结果。后续接入本地深度估计模型后，再生成视差网格和可调视角。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -303,11 +289,6 @@ private fun ThreeDWorkspace(
                 )
             }
         }
-        Text(
-            "当前立方体由程序直接创建，证明真实三维视口和基本变换控制已接通。导入图片到真实网格重建、模型文件加载和 GLB 写出仍待开发。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -343,7 +324,7 @@ private fun ParameterPanel(
                 fontWeight = FontWeight.Bold
             )
 
-            // A fresh list state per mode starts at the first parameter after switching modes.
+            // Reset the list position when the editing mode changes.
             key(mode) {
                 LazyColumn(
                     modifier = Modifier
@@ -397,10 +378,6 @@ private fun ParameterPanel(
                                 )
                             }
                         }
-                    }
-
-                    item(key = "pipeline-status") {
-                        PipelineStatus()
                     }
                 }
             }
@@ -502,60 +479,6 @@ private fun WorkspaceCard(
                 }
             }
             content()
-        }
-    }
-}
-
-@Composable
-private fun PipelineStatus() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(18.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("处理流程", fontWeight = FontWeight.Bold)
-            val steps = listOf(
-                "图片导入" to true,
-                "主体识别" to false,
-                "主体分割" to false,
-                "深度估计" to false,
-                "真实 3D 重建" to false,
-                "GLB 导出" to false
-            )
-            steps.forEachIndexed { index, step ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (step.second) MaterialTheme.colorScheme.secondary
-                                else MaterialTheme.colorScheme.outline
-                            )
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        step.first,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        if (step.second) "已接通" else "待开发",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (step.second) MaterialTheme.colorScheme.secondary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (index != steps.lastIndex) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                    )
-                }
-            }
         }
     }
 }
