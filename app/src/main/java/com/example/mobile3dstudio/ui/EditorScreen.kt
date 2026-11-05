@@ -6,11 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -20,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -44,9 +42,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.example.mobile3dstudio.ui.scene.Scene3DViewport
 
-private const val MIN_PREVIEW_ASPECT = 9f / 16f
-private const val MAX_PREVIEW_ASPECT = 16f / 9f
-
 @Composable
 fun EditorScreen(
     snackbarHostState: SnackbarHostState,
@@ -61,7 +56,6 @@ fun EditorScreen(
     imageRotationY: Float,
     isThreeDMode: Boolean,
     onImportImage: () -> Unit,
-    onRemoveImage: () -> Unit,
     onScaleChange: (Float) -> Unit,
     onOffsetXChange: (Float) -> Unit,
     onOffsetYChange: (Float) -> Unit,
@@ -90,20 +84,15 @@ fun EditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            EditorTopBar(
-                hasImage = hasImage,
-                onImportImage = onImportImage,
-                onRemoveImage = onRemoveImage,
-                onExport = onExport
-            )
-
+            // The former app toolbar has been removed. Keep the control panel close
+            // to its previous physical height while giving the preview the freed space.
             PreviewWorkspace(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.60f),
+                    .weight(0.625f),
                 imageBitmap = imageBitmap,
                 imageLoadState = imageLoadState,
                 imageScale = imageScale,
@@ -120,8 +109,8 @@ fun EditorScreen(
             ImageParameterPanel(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.40f),
-                hasImage = imageBitmap != null,
+                    .weight(0.375f),
+                hasImage = hasImage && imageBitmap != null,
                 imageScale = imageScale,
                 imageOffsetX = imageOffsetX,
                 imageOffsetY = imageOffsetY,
@@ -135,73 +124,11 @@ fun EditorScreen(
                 onRotationZChange = onRotationZChange,
                 onRotationXChange = onRotationXChange,
                 onRotationYChange = onRotationYChange,
+                onImportImage = onImportImage,
                 onToggleThreeD = onToggleThreeD,
-                onResetTransforms = onResetTransforms
+                onResetTransforms = onResetTransforms,
+                onExport = onExport
             )
-        }
-    }
-}
-
-@Composable
-private fun EditorTopBar(
-    hasImage: Boolean,
-    onImportImage: () -> Unit,
-    onRemoveImage: () -> Unit,
-    onExport: (String) -> Unit
-) {
-    var imageMenuExpanded by remember { mutableStateOf(false) }
-    var exportMenuExpanded by remember { mutableStateOf(false) }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box {
-            OutlinedButton(onClick = { imageMenuExpanded = true }) {
-                Text(if (hasImage) "图片" else "导入图片")
-            }
-            DropdownMenu(
-                expanded = imageMenuExpanded,
-                onDismissRequest = { imageMenuExpanded = false }
-            ) {
-                DropdownMenuItem(
-                    text = { Text(if (hasImage) "更换图片" else "导入图片") },
-                    onClick = {
-                        imageMenuExpanded = false
-                        onImportImage()
-                    }
-                )
-                if (hasImage) {
-                    DropdownMenuItem(
-                        text = { Text("移除图片") },
-                        onClick = {
-                            imageMenuExpanded = false
-                            onRemoveImage()
-                        }
-                    )
-                }
-            }
-        }
-
-        Box {
-            OutlinedButton(onClick = { exportMenuExpanded = true }) {
-                Text("导出")
-            }
-            DropdownMenu(
-                expanded = exportMenuExpanded,
-                onDismissRequest = { exportMenuExpanded = false }
-            ) {
-                listOf("GLB", "PNG", "JPG").forEach { format ->
-                    DropdownMenuItem(
-                        text = { Text(format) },
-                        onClick = {
-                            exportMenuExpanded = false
-                            onExport(format)
-                        }
-                    )
-                }
-            }
         }
     }
 }
@@ -223,75 +150,57 @@ private fun PreviewWorkspace(
         Float, Float, Float, Float, Float, Float, Float, Float
     ) -> Unit
 ) {
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .clip(RoundedCornerShape(22.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
-        val sourceAspect = imageBitmap?.let {
-            it.width.toFloat() / it.height.toFloat()
-        } ?: (3f / 4f)
-        val previewAspect = sourceAspect.coerceIn(MIN_PREVIEW_ASPECT, MAX_PREVIEW_ASPECT)
-        val frameModifier = if (maxWidth / maxHeight > previewAspect) {
-            Modifier
-                .fillMaxHeight()
-                .aspectRatio(previewAspect)
-        } else {
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(previewAspect)
-        }
+        when {
+            imageBitmap != null && isThreeDMode -> {
+                Scene3DViewport(
+                    modifier = Modifier.fillMaxSize(),
+                    imageBitmap = imageBitmap,
+                    imageScale = imageScale,
+                    imageOffsetX = imageOffsetX,
+                    imageOffsetY = imageOffsetY,
+                    rotationX = imageRotationX,
+                    rotationY = imageRotationY,
+                    rotationZ = imageRotationZ
+                )
+            }
 
-        Box(
-            modifier = frameModifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surface)
-        ) {
-            when {
-                imageBitmap != null && isThreeDMode -> {
-                    Scene3DViewport(
-                        modifier = Modifier.fillMaxSize(),
-                        imageBitmap = imageBitmap,
-                        imageScale = imageScale,
-                        imageOffsetX = imageOffsetX,
-                        imageOffsetY = imageOffsetY,
-                        rotationX = imageRotationX,
-                        rotationY = imageRotationY,
-                        rotationZ = imageRotationZ
-                    )
-                }
+            imageBitmap != null -> {
+                // Crop fills the entire workspace without distorting the bitmap.
+                // Pinch-out and drag let the user inspect the parts outside the viewport.
+                Image(
+                    bitmap = imageBitmap.asImageBitmap(),
+                    contentDescription = "图片预览",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = imageScale
+                            scaleY = imageScale
+                            translationX = imageOffsetX * size.width
+                            translationY = imageOffsetY * size.height
+                            rotationZ = imageRotationZ
+                        },
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.Center
+                )
+                ImageGestureLayer(
+                    imageBitmap = imageBitmap,
+                    onGestureTransform = onGestureTransform,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
-                imageBitmap != null -> {
-                    Image(
-                        bitmap = imageBitmap.asImageBitmap(),
-                        contentDescription = "图片预览",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                scaleX = imageScale
-                                scaleY = imageScale
-                                translationX = imageOffsetX * size.width
-                                translationY = imageOffsetY * size.height
-                                rotationZ = imageRotationZ
-                            },
-                        contentScale = ContentScale.Fit,
-                        alignment = Alignment.Center
-                    )
-                    ImageGestureLayer(
-                        imageBitmap = imageBitmap,
-                        onGestureTransform = onGestureTransform,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                else -> {
-                    EmptyOrLoadingState(
-                        imageLoadState = imageLoadState,
-                        onImportImage = onImportImage,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+            else -> {
+                EmptyOrLoadingState(
+                    imageLoadState = imageLoadState,
+                    onImportImage = onImportImage,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -307,7 +216,6 @@ private fun ImageGestureLayer(
 ) {
     val latestOnGestureTransform by rememberUpdatedState(onGestureTransform)
 
-    // Flat editing gestures: drag moves, pinch zooms around the fingers, twist rotates.
     Box(
         modifier = modifier.pointerInput(imageBitmap) {
             detectTransformGestures { centroid, pan, zoom, rotation ->
@@ -333,20 +241,29 @@ private fun EmptyOrLoadingState(
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = modifier.padding(16.dp),
+        modifier = modifier
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         when (imageLoadState) {
             ImageLoadState.Empty -> {
-                Text("尚未导入图片", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button(onClick = onImportImage) {
+                Text(
+                    "尚未导入图片",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(onClick = onImportImage) {
                     Text("导入图片")
                 }
             }
+
             ImageLoadState.Loading -> {
-                Text("正在载入图片…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "正在载入图片…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
+
             is ImageLoadState.Failure -> {
                 Text(
                     imageLoadState.message,
@@ -357,6 +274,7 @@ private fun EmptyOrLoadingState(
                     Text("重新选择")
                 }
             }
+
             is ImageLoadState.Success -> Unit
         }
     }
@@ -379,8 +297,10 @@ private fun ImageParameterPanel(
     onRotationZChange: (Float) -> Unit,
     onRotationXChange: (Float) -> Unit,
     onRotationYChange: (Float) -> Unit,
+    onImportImage: () -> Unit,
     onToggleThreeD: () -> Unit,
-    onResetTransforms: () -> Unit
+    onResetTransforms: () -> Unit,
+    onExport: (String) -> Unit
 ) {
     Surface(
         modifier = modifier,
@@ -400,20 +320,34 @@ private fun ImageParameterPanel(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("参数调节", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "参数调节",
+                    style = MaterialTheme.typography.titleSmall
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     OutlinedButton(
                         onClick = onResetTransforms,
                         enabled = hasImage
                     ) {
                         Text("重置")
                     }
+
                     Button(
                         onClick = onToggleThreeD,
                         enabled = hasImage
                     ) {
-                        Text(if (isThreeDMode) "返回平面" else "进入 3D 平面")
+                        Text(if (isThreeDMode) "返回平面" else "3D预览")
                     }
+
+                    ParameterMenu(
+                        hasImage = hasImage,
+                        onImportImage = onImportImage,
+                        onExport = onExport
+                    )
                 }
             }
 
@@ -428,7 +362,7 @@ private fun ImageParameterPanel(
             ParameterSlider(
                 title = "水平位置",
                 value = imageOffsetX,
-                valueRange = -2f..2f,
+                valueRange = -4f..4f,
                 enabled = hasImage,
                 valueText = "${"%.2f".format(imageOffsetX)}",
                 onValueChange = onOffsetXChange
@@ -436,7 +370,7 @@ private fun ImageParameterPanel(
             ParameterSlider(
                 title = "垂直位置",
                 value = imageOffsetY,
-                valueRange = -2f..2f,
+                valueRange = -4f..4f,
                 enabled = hasImage,
                 valueText = "${"%.2f".format(imageOffsetY)}",
                 onValueChange = onOffsetYChange
@@ -452,7 +386,7 @@ private fun ImageParameterPanel(
 
             if (isThreeDMode) {
                 ParameterSlider(
-                    title = "3D X 轴旋转",
+                    title = "3D X轴旋转",
                     value = imageRotationX,
                     valueRange = -90f..90f,
                     enabled = hasImage,
@@ -460,7 +394,7 @@ private fun ImageParameterPanel(
                     onValueChange = onRotationXChange
                 )
                 ParameterSlider(
-                    title = "3D Y 轴旋转",
+                    title = "3D Y轴旋转",
                     value = imageRotationY,
                     valueRange = -90f..90f,
                     enabled = hasImage,
@@ -468,6 +402,59 @@ private fun ImageParameterPanel(
                     onValueChange = onRotationYChange
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ParameterMenu(
+    hasImage: Boolean,
+    onImportImage: () -> Unit,
+    onExport: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            IconButton(onClick = { expanded = true }) {
+                Text(
+                    "⋮",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(if (hasImage) "更换图片" else "导入图片") },
+                onClick = {
+                    expanded = false
+                    onImportImage()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("导出 PNG") },
+                enabled = hasImage,
+                onClick = {
+                    expanded = false
+                    onExport("PNG")
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("导出 GLB") },
+                enabled = hasImage,
+                onClick = {
+                    expanded = false
+                    onExport("GLB")
+                }
+            )
         }
     }
 }
