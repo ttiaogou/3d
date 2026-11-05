@@ -119,19 +119,6 @@ fun Mobile3DStudioApp() {
                 }
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(
-                    "从一张图片开始，逐步得到可编辑的空间对象。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "当前版本：基础框架 · 离线优先 · 无付费 API",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
-
             ModeSelector(selected = mode, onSelect = { mode = it })
 
             when (mode) {
@@ -175,18 +162,7 @@ private fun Header(hasImage: Boolean, onImport: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                "M3D STUDIO",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "IMAGE  /  DEPTH  /  3D",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        Spacer(Modifier.weight(1f))
         Button(onClick = onImport) {
             Text(if (hasImage) "更换图片" else "导入图片")
         }
@@ -272,7 +248,7 @@ private fun ThreeDWorkspace(
     onScaleChange: (Float) -> Unit,
     onExport: () -> Unit
 ) {
-    WorkspaceCard(title = "3D 模型工作区", subtitle = "Filament 实时三维视口 · 手势旋转 / 缩放相机") {
+    WorkspaceCard(title = "3D 模型工作区", subtitle = null) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -374,7 +350,7 @@ private fun ImagePreview(imageBitmap: ImageBitmap?) {
 @Composable
 private fun WorkspaceCard(
     title: String,
-    subtitle: String,
+    subtitle: String?,
     content: @Composable () -> Unit
 ) {
     Card(
@@ -388,7 +364,9 @@ private fun WorkspaceCard(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                subtitle?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             content()
         }
