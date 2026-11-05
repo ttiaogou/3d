@@ -17,10 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import com.example.mobile3dstudio.core.model.EditorMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -33,13 +30,12 @@ fun Mobile3DStudioApp() {
     val scope = rememberCoroutineScope()
 
     var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
-    var imageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    var mode by rememberSaveable { mutableStateOf(EditorMode.TWO_D) }
+    var imageBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    var positionX by rememberSaveable { mutableFloatStateOf(0f) }
-    var rotationX by rememberSaveable { mutableFloatStateOf(18f) }
-    var rotationY by rememberSaveable { mutableFloatStateOf(25f) }
-    var scaleFactor by rememberSaveable { mutableFloatStateOf(1f) }
+    var imageScale by rememberSaveable { mutableFloatStateOf(1f) }
+    var imageOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
+    var imageOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
+    var imageRotation by rememberSaveable { mutableFloatStateOf(0f) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -52,11 +48,15 @@ fun Mobile3DStudioApp() {
 
     LaunchedEffect(selectedUriText) {
         val text = selectedUriText
+        imageScale = 1f
+        imageOffsetX = 0f
+        imageOffsetY = 0f
+        imageRotation = 0f
         imageBitmap = if (text == null) {
             null
         } else {
             withContext(Dispatchers.IO) {
-                decodeScaledBitmap(context, Uri.parse(text))?.asImageBitmap()
+                decodeScaledBitmap(context, Uri.parse(text))
             }
         }
     }
@@ -65,8 +65,11 @@ fun Mobile3DStudioApp() {
         snackbarHostState = snackbarHostState,
         hasImage = selectedUriText != null,
         imageBitmap = imageBitmap,
-        mode = mode,
-        onImport = {
+        imageScale = imageScale,
+        imageOffsetX = imageOffsetX,
+        imageOffsetY = imageOffsetY,
+        imageRotation = imageRotation,
+        onImportImage = {
             imagePicker.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
             )
@@ -75,40 +78,20 @@ fun Mobile3DStudioApp() {
             selectedUriText = null
             imageBitmap = null
         },
-        onModeSelect = { mode = it },
-        positionX = positionX,
-        rotationX = rotationX,
-        rotationY = rotationY,
-        scaleFactor = scaleFactor,
-        onPositionChange = { positionX = it },
-        onRotationXChange = { rotationX = it },
-        onRotationYChange = { rotationY = it },
-        onScaleChange = { scaleFactor = it },
-        onResetTransforms = {
-            positionX = 0f
-            rotationX = 18f
-            rotationY = 25f
-            scaleFactor = 1f
-        },
-        onTwoDAction = { action ->
-            scope.launch {
-                snackbarHostState.showSnackbar("$action：功能接口已预留，尚未接入")
-            }
-        },
-        onTwoPointFiveDAction = {
-            scope.launch {
-                snackbarHostState.showSnackbar("深度估计与视差网格尚未接入")
-            }
+        onImageTransform = { scale, offsetX, offsetY, rotation ->
+            imageScale = scale
+            imageOffsetX = offsetX
+            imageOffsetY = offsetY
+            imageRotation = rotation
         },
         onExport = { format ->
-            scope.launch {
-                val message = if (format == "GLB") {
-                    "GLB 导出接口已定义，导出器尚未实现"
-                } else {
-                    "$format 导出功能尚未接入"
-                }
-                snackbarHostState.showSnackbar(message)
+            val message = when (format) {
+                "GLB" -> "GLB 导出器尚未实现"
+                "PNG" -> "PNG 场景图片导出尚未实现"
+                "JPG" -> "JPG 场景图片导出尚未实现"
+                else -> "不支持的导出格式"
             }
+            scope.launch { snackbarHostState.showSnackbar(message) }
         }
     )
 }
