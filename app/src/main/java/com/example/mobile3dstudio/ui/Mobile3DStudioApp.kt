@@ -320,12 +320,18 @@ private fun TransformSlider(
     }
 }
 
+
 @Composable
 private fun ImagePreview(imageBitmap: ImageBitmap?) {
+
+    val previewAspectRatio = imageBitmap?.let {
+        it.width.toFloat() / it.height.toFloat()
+    } ?: 1.45f
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1.45f)
+            .aspectRatio(previewAspectRatio)
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
@@ -338,10 +344,21 @@ private fun ImagePreview(imageBitmap: ImageBitmap?) {
                 contentScale = ContentScale.Fit
             )
         } else {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("＋", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.primary)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "＋",
+                    style = MaterialTheme.typography.displayMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 Text("尚未导入图片", fontWeight = FontWeight.SemiBold)
-                Text("点击右上角「导入图片」选择相册照片", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "点击右上角「导入图片」选择相册照片",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
