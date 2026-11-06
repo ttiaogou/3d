@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.mobile3dstudio"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     compileOptions {
@@ -37,11 +37,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview:1.12.1")
     implementation("androidx.compose.foundation:foundation:1.12.1")
     implementation("androidx.compose.material3:material3:1.4.0")
-
-    // Reads EXIF orientation so camera photos are displayed upright.
     implementation("androidx.exifinterface:exifinterface:1.4.2")
 
-    // Real-time Android 3D rendering (Filament-based).
+    // Retained from the repository's original Android renderer setup.
     implementation("io.github.sceneview:sceneview:4.65.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.12.1")
