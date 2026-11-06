@@ -12,14 +12,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -38,7 +36,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -52,21 +49,6 @@ import com.example.mobile3dstudio.ui.scene.DiceSceneWebView
 const val MODEL_FRAGMENT = "fragment-dice"
 const val MODEL_CUT = "cut-dice"
 const val MODEL_POKER = "poker"
-
-data class SceneObjectUi(
-    val id: Long,
-    val kind: String,
-    val value: String,
-    val cutPercent: Float? = null
-) {
-    val title: String
-        get() = when (kind) {
-            MODEL_FRAGMENT -> "骰子1 · ${value}点 · #$id"
-            MODEL_CUT -> "骰子2 · ${value}点 · ${cutPercent?.let { "${it.toInt()}% · " } ?: ""}#$id"
-            MODEL_POKER -> "黑桃Q · #$id"
-            else -> "模型 #$id"
-        }
-}
 
 data class ModelTransformUi(
     val x: Float = 0f,
@@ -89,7 +71,7 @@ fun EditorScreen(
     isModelWorkspace: Boolean,
     selectedModelType: String,
     pointInput: String,
-    sceneObjects: List<SceneObjectUi>,
+    hasExportContent: Boolean,
     selectedObjectId: Long?,
     selectedTransform: ModelTransformUi,
     canUndo: Boolean,
@@ -106,13 +88,13 @@ fun EditorScreen(
     onModelTypeSelect: (String) -> Unit,
     onPointInputChange: (String) -> Unit,
     onGenerateModel: () -> Unit,
-    onSelectObject: (Long) -> Unit,
     onModelTransformChange: (String, Float) -> Unit,
     onModelTransformFinish: () -> Unit,
     onDefaultModel: () -> Unit,
     onUndo: () -> Unit,
     onExportPng: () -> Unit,
-    onExportGlb: () -> Unit
+    onExportGlb: () -> Unit,
+    onExportFileReady: (String, String, String, Boolean, String) -> Unit
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -132,25 +114,38 @@ fun EditorScreen(
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                // Keep the original WebGL renderer alive while flat-image editing is active.
-                DiceSceneWebView(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .alpha(if (isModelWorkspace) 1f else 0.001f),
-                    onWebViewReady = onWebViewReady,
-                    onSceneState = onSceneState,
-                    onCommandResult = onEngineMessage
+                // The imported image is always the workspace background. Entering the model
+                // workbench changes only the lower panel; it never converts or removes the image.
+                FlatImageWorkspace(
+                    imageLoadState = imageLoadState,
+                    imageBitmap = imageBitmap,
+                    imageScale = imageScale,
+                    imageOffsetX = imageOffsetX,
+                    imageOffsetY = imageOffsetY,
+                    imageRotation = imageRotation,
+                    onImportImage = onImportImage,
+                    modifier = Modifier.fillMaxSize()
                 )
 
-                if (!isModelWorkspace) {
-                    FlatImageWorkspace(
-                        imageLoadState = imageLoadState,
+                // Transparent WebGL canvas stays above the image and renders models only.
+                DiceSceneWebView(
+                    modifier = Modifier.fillMaxSize(),
+                    previewBitmap = imageBitmap,
+                    previewScale = imageScale,
+                    previewOffsetX = imageOffsetX,
+                    previewOffsetY = imageOffsetY,
+                    previewRotation = imageRotation,
+                    onWebViewReady = onWebViewReady,
+                    onSceneState = onSceneState,
+                    onCommandResult = onEngineMessage,
+                    onExportFileReady = onExportFileReady
+                )
+
+                // In image mode, gestures edit the flat preview. In model mode, touches pass
+                // through to WebView so the user can select and manipulate 3D objects.
+                if (!isModelWorkspace && imageBitmap != null) {
+                    FlatGestureLayer(
                         imageBitmap = imageBitmap,
-                        imageScale = imageScale,
-                        imageOffsetX = imageOffsetX,
-                        imageOffsetY = imageOffsetY,
-                        imageRotation = imageRotation,
-                        onImportImage = onImportImage,
                         onFlatGesture = onFlatGesture,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -163,13 +158,13 @@ fun EditorScreen(
                         .fillMaxWidth()
                         .weight(0.375f),
                     hasImage = imageBitmap != null,
+                    hasExportContent = hasExportContent,
                     onImportImage = onImportImage,
                     onRemoveImage = onRemoveImage,
                     onExportPng = onExportPng,
                     onExportGlb = onExportGlb,
                     selectedModelType = selectedModelType,
                     pointInput = pointInput,
-                    sceneObjects = sceneObjects,
                     selectedObjectId = selectedObjectId,
                     selectedTransform = selectedTransform,
                     canUndo = canUndo,
@@ -178,7 +173,6 @@ fun EditorScreen(
                     onModelTypeSelect = onModelTypeSelect,
                     onPointInputChange = onPointInputChange,
                     onGenerateModel = onGenerateModel,
-                    onSelectObject = onSelectObject,
                     onModelTransformChange = onModelTransformChange,
                     onModelTransformFinish = onModelTransformFinish,
                     onDefaultModel = onDefaultModel,
@@ -191,6 +185,7 @@ fun EditorScreen(
                         .fillMaxWidth()
                         .weight(0.375f),
                     hasImage = imageBitmap != null,
+                    hasExportContent = hasExportContent,
                     onEnterModels = onEnterModels,
                     onImportImage = onImportImage,
                     onRemoveImage = onRemoveImage,
@@ -211,7 +206,6 @@ private fun FlatImageWorkspace(
     imageOffsetY: Float,
     imageRotation: Float,
     onImportImage: () -> Unit,
-    onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
@@ -230,11 +224,6 @@ private fun FlatImageWorkspace(
                     },
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.Center
-            )
-            FlatGestureLayer(
-                imageBitmap = imageBitmap,
-                onFlatGesture = onFlatGesture,
-                modifier = Modifier.fillMaxSize()
             )
         } else {
             Column(
@@ -281,7 +270,8 @@ private fun FlatImagePanel(
     onImportImage: () -> Unit,
     onRemoveImage: () -> Unit,
     onExportPng: () -> Unit,
-    onExportGlb: () -> Unit
+    onExportGlb: () -> Unit,
+    hasExportContent: Boolean
 ) {
     Surface(
         modifier = modifier,
@@ -301,7 +291,8 @@ private fun FlatImagePanel(
                 onRemoveImage = onRemoveImage,
                 onExportPng = onExportPng,
                 onExportGlb = onExportGlb,
-                hasImage = hasImage
+                hasImage = hasImage,
+                hasExportContent = hasExportContent
             )
         }
     }
@@ -313,7 +304,8 @@ private fun PanelMenuButton(
     onRemoveImage: () -> Unit,
     onExportPng: () -> Unit,
     onExportGlb: () -> Unit,
-    hasImage: Boolean
+    hasImage: Boolean,
+    hasExportContent: Boolean
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -331,13 +323,14 @@ private fun PanelMenuButton(
                     text = { Text("移除图片") },
                     onClick = { expanded = false; onRemoveImage() }
                 )
+            }
+            if (hasExportContent) {
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Text("导出 PNG") },
                     onClick = { expanded = false; onExportPng() }
                 )
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Text("导出 GLB") },
-                    enabled = false,
                     onClick = { expanded = false; onExportGlb() }
                 )
             }
@@ -349,13 +342,13 @@ private fun PanelMenuButton(
 private fun ModelWorkbench(
     modifier: Modifier,
     hasImage: Boolean,
+    hasExportContent: Boolean,
     onImportImage: () -> Unit,
     onRemoveImage: () -> Unit,
     onExportPng: () -> Unit,
     onExportGlb: () -> Unit,
     selectedModelType: String,
     pointInput: String,
-    sceneObjects: List<SceneObjectUi>,
     selectedObjectId: Long?,
     selectedTransform: ModelTransformUi,
     canUndo: Boolean,
@@ -364,7 +357,6 @@ private fun ModelWorkbench(
     onModelTypeSelect: (String) -> Unit,
     onPointInputChange: (String) -> Unit,
     onGenerateModel: () -> Unit,
-    onSelectObject: (Long) -> Unit,
     onModelTransformChange: (String, Float) -> Unit,
     onModelTransformFinish: () -> Unit,
     onDefaultModel: () -> Unit,
@@ -401,7 +393,8 @@ private fun ModelWorkbench(
                         onRemoveImage = onRemoveImage,
                         onExportPng = onExportPng,
                         onExportGlb = onExportGlb,
-                        hasImage = hasImage
+                        hasImage = hasImage,
+                        hasExportContent = hasExportContent
                     )
                 }
             }
@@ -446,19 +439,6 @@ private fun ModelWorkbench(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-
-            if (sceneObjects.isNotEmpty()) {
-                Text("场景对象", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(sceneObjects, key = { it.id }) { obj ->
-                        FilterChip(
-                            selected = selectedObjectId == obj.id,
-                            onClick = { onSelectObject(obj.id) },
-                            label = { Text(obj.title) }
-                        )
-                    }
-                }
             }
 
             Row(

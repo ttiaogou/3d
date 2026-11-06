@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.UUID
 
@@ -54,7 +55,8 @@ fun Mobile3DStudioApp() {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var rendererReady by remember { mutableStateOf(false) }
     var rendererError by remember { mutableStateOf<String?>(null) }
-    var sceneObjects by remember { mutableStateOf<List<SceneObjectUi>>(emptyList()) }
+    var sceneObjectCount by remember { mutableStateOf(0) }
+    var pendingExportFile by remember { mutableStateOf<File?>(null) }
     var selectedObjectId by remember { mutableStateOf<Long?>(null) }
     var selectedTransform by remember { mutableStateOf(ModelTransformUi()) }
     var canUndo by remember { mutableStateOf(false) }
@@ -100,6 +102,40 @@ fun Mobile3DStudioApp() {
         }
     }
 
+    fun finishExportSave(uri: Uri?, typeLabel: String) {
+        val file = pendingExportFile
+        pendingExportFile = null
+        if (file == null) return
+        if (uri == null) {
+            file.delete()
+            scope.launch { snackbarHostState.showSnackbar("已取消保存 ${typeLabel} 文件") }
+            return
+        }
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IOException("无法创建导出文件。")
+                    output.use { sink ->
+                        FileInputStream(file).use { source -> source.copyTo(sink) }
+                    }
+                    file.delete()
+                }
+                snackbarHostState.showSnackbar("${typeLabel} 已保存")
+            } catch (error: Exception) {
+                file.delete()
+                snackbarHostState.showSnackbar("${typeLabel} 保存失败：${error.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    val savePngLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/png")
+    ) { uri -> finishExportSave(uri, "PNG") }
+    val saveGlbLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("model/gltf-binary")
+    ) { uri -> finishExportSave(uri, "GLB") }
+
     // Restore the local image copy after activity/process recreation.
     LaunchedEffect(Unit) {
         val path = savedImagePath
@@ -125,9 +161,9 @@ fun Mobile3DStudioApp() {
         target.post { target.evaluateJavascript(script, null) }
     }
 
-    fun runModelCommand(expression: String) {
+    fun runEngineCommand(expression: String, successMessage: String) {
         val target = webView ?: run {
-            scope.launch { snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请返回后重新进入模型页。") }
+            scope.launch { snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请稍后重试。") }
             return
         }
         val script = """
@@ -140,10 +176,10 @@ fun Mobile3DStudioApp() {
                 const api=window.Mobile3DStudio;
                 if(!api){report(false,'3D 引擎接口尚未加载，请稍后重试。');return;}
                 Promise.resolve($expression).then(result=>{
-                  if(result===true)report(true,'模型生成完成。');
-                  else report(false,'模型生成未完成，请检查 WebGL 初始化状态和模型输入。');
-                }).catch(error=>report(false,error&&error.message?error.message:'模型生成时发生未知错误。'));
-              }catch(error){report(false,error&&error.message?error.message:'模型生成调用失败。');}
+                  if(result===true)report(true,${org.json.JSONObject.quote(successMessage)});
+                  else report(false,'操作未完成，请检查 3D 引擎状态。');
+                }).catch(error=>report(false,error&&error.message?error.message:'操作时发生未知错误。'));
+              }catch(error){report(false,error&&error.message?error.message:'操作调用失败。');}
             })();
         """.trimIndent()
         target.post { target.evaluateJavascript(script, null) }
@@ -155,23 +191,7 @@ fun Mobile3DStudioApp() {
             rendererReady = root.optBoolean("ready", false)
             rendererError = root.optString("error").takeIf { it.isNotBlank() && it != "null" }
             canUndo = root.optBoolean("canUndo", false)
-            val list = root.optJSONArray("objects")
-            val nextObjects = buildList {
-                if (list != null) {
-                    for (i in 0 until list.length()) {
-                        val item = list.optJSONObject(i) ?: continue
-                        add(
-                            SceneObjectUi(
-                                id = item.optLong("id"),
-                                kind = item.optString("kind"),
-                                value = item.optString("value"),
-                                cutPercent = if (item.isNull("cutPercent")) null else item.optDouble("cutPercent").toFloat()
-                            )
-                        )
-                    }
-                }
-            }
-            sceneObjects = nextObjects
+            sceneObjectCount = root.optJSONArray("objects")?.length() ?: 0
             val selected = root.optJSONObject("selected")
             if (selected == null) {
                 selectedObjectId = null
@@ -205,12 +225,33 @@ fun Mobile3DStudioApp() {
         isModelWorkspace = isModelWorkspace,
         selectedModelType = selectedModelType,
         pointInput = pointInput,
-        sceneObjects = sceneObjects,
+        hasExportContent = imageBitmap != null || sceneObjectCount > 0,
         selectedObjectId = selectedObjectId,
         selectedTransform = selectedTransform,
         canUndo = canUndo,
         rendererReady = rendererReady,
         rendererError = rendererError,
+        onExportFileReady = { type, path, fileName, success, message ->
+            if (!success || path.isBlank()) {
+                scope.launch { snackbarHostState.showSnackbar(message.ifBlank { "导出文件生成失败。" }) }
+            } else {
+                val file = File(path)
+                if (!file.exists() || file.length() <= 0L) {
+                    scope.launch { snackbarHostState.showSnackbar("导出文件为空，未能保存。") }
+                } else {
+                    pendingExportFile = file
+                    when (type) {
+                        "glb" -> saveGlbLauncher.launch(fileName.ifBlank { "Mobile3DStudio-Scene.glb" })
+                        "png" -> savePngLauncher.launch(fileName.ifBlank { "Mobile3DStudio-Preview.png" })
+                        else -> {
+                            file.delete()
+                            pendingExportFile = null
+                            scope.launch { snackbarHostState.showSnackbar("不支持的导出类型：$type") }
+                        }
+                    }
+                }
+            }
+        },
         onEngineMessage = { success, message ->
             if (!success && !rendererReady) rendererError = message
             if (success && rendererReady) rendererError = null
@@ -261,13 +302,12 @@ fun Mobile3DStudioApp() {
                 }
             } else {
                 when (selectedModelType) {
-                    MODEL_FRAGMENT -> runModelCommand("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})")
-                    MODEL_CUT -> runModelCommand("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})")
-                    MODEL_POKER -> runModelCommand("window.Mobile3DStudio.addPoker()")
+                    MODEL_FRAGMENT -> runEngineCommand("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})", "骰子模型已生成。")
+                    MODEL_CUT -> runEngineCommand("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})", "双切面骰子已生成。")
+                    MODEL_POKER -> runEngineCommand("window.Mobile3DStudio.addPoker()", "黑桃 Q 已生成。")
                 }
             }
         },
-        onSelectObject = { id -> runJs("window.Mobile3DStudio.selectObject($id)") },
         onModelTransformChange = { axis, value ->
             runJs("window.Mobile3DStudio.setTransform('$axis',$value)")
         },
@@ -275,10 +315,12 @@ fun Mobile3DStudioApp() {
         onDefaultModel = { runJs("window.Mobile3DStudio.resetSelected()") },
         onUndo = { runJs("window.Mobile3DStudio.undo()") },
         onExportPng = {
-            scope.launch { snackbarHostState.showSnackbar("PNG 导出入口已保留，原生保存流程尚未接入") }
+            if (!rendererReady) scope.launch { snackbarHostState.showSnackbar(rendererError ?: "3D 渲染器尚未就绪") }
+            else runEngineCommand("window.Mobile3DStudio.exportPng()", "PNG 图像已生成，正在选择保存位置…")
         },
         onExportGlb = {
-            scope.launch { snackbarHostState.showSnackbar("GLB 网格导出器尚未实现") }
+            if (!rendererReady) scope.launch { snackbarHostState.showSnackbar(rendererError ?: "3D 渲染器尚未就绪") }
+            else runEngineCommand("window.Mobile3DStudio.exportGlb()", "GLB 场景文件已生成，正在选择保存位置…")
         }
     )
 }
