@@ -429,9 +429,9 @@ private fun ModelWorkbench(
                     }
                 }
                 Button(
-                    onClick = onGenerateModel,
-                    enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
-                ) { Text("生成模型") }
+    onClick = onGenerateModel,
+    enabled = selectedModelType == MODEL_POKER || pointInput.isNotBlank()
+) { Text("生成模型") }
             }
             if (!rendererReady) {
                 Text(
