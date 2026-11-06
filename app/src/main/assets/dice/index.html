@@ -18,7 +18,7 @@ input[type=range]{width:100%;accent-color:#8ee0cf;height:18px;cursor:pointer}.ra
 
 /* Android native host mode: keep the original WebGL renderer, hide its web UI. */
 html, body { width:100%; height:100%; min-height:100%; overflow:hidden !important; margin:0; background:transparent !important; }
-.app { display:block !important; width:100%; height:100dvh !important; min-height:0 !important; background:transparent !important; }
+.app { display:block !important; width:100%; height:100% !important; min-height:0 !important; background:transparent !important; }
 .topbar, .sidebar, .stage-head, .bottom-hint, .selection-chip, .empty-state { display:none !important; }
 .layout { display:block !important; width:100%; height:100% !important; min-height:0 !important; padding:0 !important; margin:0 !important; }
 .workspace { position:relative; display:block; width:100%; height:100% !important; min-height:0 !important; border:0 !important; border-radius:16px !important; box-shadow:none !important; background:transparent !important; }
@@ -125,7 +125,7 @@ const $ = id => document.getElementById(id);
 const canvas = $('stage'), backdrop = $('backdrop'), overlay = $('overlay');
 const bg2d = backdrop.getContext('2d'), over2d = overlay.getContext('2d');
 const gl = canvas.getContext('webgl', { alpha:true, antialias:true, depth:true, preserveDrawingBuffer:true, premultipliedAlpha:false }) || canvas.getContext('experimental-webgl');
-const state = { pieces:[], selected:null, mode:'move', bg:null, bgFit:'cover', dpr:1, width:1, height:1, viewScale:1, pointer:null, hitTargets:[], toastTimer:0, backgroundFileName:'', card:null, cardPointer:null, cardHit:null };
+const state = { pieces:[], selected:null, mode:'move', bg:null, bgFit:'cover', dpr:1, width:1, height:1, viewScale:1, viewportReady:false, viewportError:'', pointer:null, hitTargets:[], toastTimer:0, backgroundFileName:'', card:null, cardPointer:null, cardHit:null };
 const pokerFrontImage = new Image();
 const pokerBackImage = new Image();
 let pokerTexturesPromise = null;
@@ -145,6 +145,8 @@ const PIP_LAYOUTS={
   9:[[-.25,.30],[0,.30],[.25,.30],[-.25,0],[0,0],[.25,0],[-.25,-.30],[0,-.30],[.25,-.30]]
 };
 let nextId=1, program=null, locations=null, glReady=false, rendererError='';
+let viewportRetryFrame=0,viewportRetryCount=0;
+function scheduleViewportRetry(){if(viewportRetryFrame||viewportRetryCount>=30)return;viewportRetryFrame=requestAnimationFrame(()=>{viewportRetryFrame=0;viewportRetryCount++;if(!resizeCanvas()&&viewportRetryCount<30)scheduleViewportRetry();});}
 
 const VERT=`attribute vec3 aPosition; attribute vec3 aNormal; attribute vec2 aUv; uniform mat4 uMvp; uniform mat4 uModel; varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUv; void main(){ vec4 world=uModel*vec4(aPosition,1.0); vWorld=world.xyz; vNormal=mat3(uModel)*aNormal; vUv=aUv; gl_Position=uMvp*vec4(aPosition,1.0); }`;
 const FRAG=`precision mediump float; uniform vec3 uBaseColor; uniform vec3 uPipColor; uniform vec3 uLightDir; uniform vec3 uCameraPos; uniform vec4 uFacePipParams; uniform vec2 uPips[9]; varying vec3 vNormal; varying vec3 vWorld; varying vec2 vUv; void main(){ vec3 N=normalize(vNormal); vec3 L=normalize(uLightDir); vec3 V=normalize(uCameraPos-vWorld); vec3 H=normalize(L+V); float diff=max(dot(N,L),0.0); float spec=pow(max(dot(N,H),0.0),34.0)*0.20; float light=0.48+0.48*diff; vec3 base=uBaseColor; if(uFacePipParams.x>0.5 && uFacePipParams.y>0.5){ float d=10.0; for(int i=0;i<9;i++){ if(float(i)<uFacePipParams.y){ d=min(d,length(vUv-uPips[i])); } } float dotFill=1.0-smoothstep(uFacePipParams.z*0.91,uFacePipParams.z*1.04,d); float rim=smoothstep(uFacePipParams.z*0.68,uFacePipParams.z*0.90,d)*(1.0-smoothstep(uFacePipParams.z*0.90,uFacePipParams.z*1.12,d)); base=mix(base,uPipColor,dotFill); base*=1.0-0.10*rim; } vec3 color=base*light+vec3(spec); gl_FragColor=vec4(color,1.0); }`;
@@ -576,11 +578,37 @@ function pointNearPoly(point,poly,threshold){if(!poly||poly.length<2)return fals
 function drawBackground(){const w=state.width,h=state.height;bg2d.clearRect(0,0,w,h);if(window.AndroidBridge)return;if(state.bg&&state.bg.complete&&state.bg.naturalWidth){const iw=state.bg.naturalWidth,ih=state.bg.naturalHeight,scale=state.bgFit==='cover'?Math.max(w/iw,h/ih):Math.min(w/iw,h/ih),dw=iw*scale,dh=ih*scale;bg2d.fillStyle='#17212b';bg2d.fillRect(0,0,w,h);bg2d.drawImage(state.bg,(w-dw)/2,(h-dh)/2,dw,dh);bg2d.fillStyle='rgba(8,13,19,.12)';bg2d.fillRect(0,0,w,h);}else{const g=bg2d.createLinearGradient(0,0,w,h);g.addColorStop(0,'#26313c');g.addColorStop(.52,'#1b2630');g.addColorStop(1,'#131c26');bg2d.fillStyle=g;bg2d.fillRect(0,0,w,h);bg2d.save();bg2d.strokeStyle='rgba(213,231,238,.045)';bg2d.lineWidth=1;for(let x=0;x<w;x+=34){bg2d.beginPath();bg2d.moveTo(x,0);bg2d.lineTo(x,h);bg2d.stroke();}for(let y=0;y<h;y+=34){bg2d.beginPath();bg2d.moveTo(0,y);bg2d.lineTo(w,y);bg2d.stroke();}const glow=bg2d.createRadialGradient(w*.52,h*.45,20,w*.52,h*.45,Math.max(w,h)*.68);glow.addColorStop(0,'rgba(117,194,178,.10)');glow.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=glow;bg2d.fillRect(0,0,w,h);bg2d.restore();}}
 function drawShadows(){for(const p of state.pieces){const x=state.width/2+p.x+8,y=state.height/2+p.y+p.h*.31+p.thickness*.25,r=Math.max(p.w,p.h)*.72;bg2d.save();bg2d.translate(x,y);bg2d.scale(1,.48);const g=bg2d.createRadialGradient(0,0,2,0,0,r);g.addColorStop(0,'rgba(0,0,0,.32)');g.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=g;bg2d.beginPath();bg2d.arc(0,0,r,0,Math.PI*2);bg2d.fill();bg2d.restore();}if(state.card){const c=state.card;bg2d.save();bg2d.translate(state.width/2+c.x+7,state.height/2+c.y+c.h*.12+10);bg2d.rotate(c.rz);bg2d.scale(1,.42);const r=Math.max(c.w,c.h)*.60,g=bg2d.createRadialGradient(0,0,2,0,0,r);g.addColorStop(0,'rgba(0,0,0,.27)');g.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=g;bg2d.beginPath();bg2d.ellipse(0,0,c.w*.48,c.h*.42,0,0,Math.PI*2);bg2d.fill();bg2d.restore();}}
 function drawOverlay(){over2d.clearRect(0,0,state.width,state.height);const h=state.hitTargets.find(v=>v.id===state.selected);if(h&&h.hull.length){over2d.save();over2d.beginPath();over2d.moveTo(h.hull[0].x,h.hull[0].y);for(let i=1;i<h.hull.length;i++)over2d.lineTo(h.hull[i].x,h.hull[i].y);over2d.closePath();over2d.strokeStyle='rgba(169,241,222,.92)';over2d.lineWidth=1.6;over2d.setLineDash([5,4]);over2d.shadowColor='#66d5bc';over2d.shadowBlur=8;over2d.stroke();over2d.restore();}if(state.card&&state.card.selected&&state.cardHit&&state.cardHit.hull.length>=3){const q=state.cardHit.hull;over2d.save();over2d.beginPath();over2d.moveTo(q[0].x,q[0].y);for(let i=1;i<q.length;i++)over2d.lineTo(q[i].x,q[i].y);over2d.closePath();over2d.strokeStyle='#8ee0cf';over2d.lineWidth=2;over2d.setLineDash([7,5]);over2d.shadowColor='#66d5bc';over2d.shadowBlur=8;over2d.stroke();over2d.restore();}}
-function render(){if(!glReady||!state.width||!state.height)return;const {vp,dist}=currentVP();gl.viewport(0,0,canvas.width,canvas.height);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(program);state.hitTargets=[];state.cardHit=null;for(const p of state.pieces){const model=modelMatrix(p),mvp=multiply(vp,model);if(p.kind==='real-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else if(p.kind==='cut-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.cut,mvp,model,false,dist,'#b7aa92');drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else{drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.front,mvp,model,true,dist);}const worldPts=p.hitLocal.map(q=>matPoint(model,q)),screenPts=worldPts.map(q=>projectPoint(q,vp)),hull=convexHull(screenPts);const avgDepth=screenPts.reduce((s,v)=>s+(v?v.z:1),0)/Math.max(1,screenPts.length);state.hitTargets.push({id:p.id,hull,depth:avgDepth});}drawCard3D(vp,dist);drawOverlay();}
+function render(){if(!glReady||!state.viewportReady||!state.width||!state.height)return;const {vp,dist}=currentVP();gl.viewport(0,0,canvas.width,canvas.height);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(program);state.hitTargets=[];state.cardHit=null;for(const p of state.pieces){const model=modelMatrix(p),mvp=multiply(vp,model);if(p.kind==='real-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else if(p.kind==='cut-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.cut,mvp,model,false,dist,'#b7aa92');drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else{drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.front,mvp,model,true,dist);}const worldPts=p.hitLocal.map(q=>matPoint(model,q)),screenPts=worldPts.map(q=>projectPoint(q,vp)),hull=convexHull(screenPts);const avgDepth=screenPts.reduce((s,v)=>s+(v?v.z:1),0)/Math.max(1,screenPts.length);state.hitTargets.push({id:p.id,hull,depth:avgDepth});}drawCard3D(vp,dist);drawOverlay();}
 function updateUI(){const realCount=state.pieces.filter(v=>v.kind==='real-dice').length,cutCount=state.pieces.filter(v=>v.kind==='cut-dice').length,fragmentCount=state.pieces.length-realCount-cutCount;$('pieceCount').textContent=[fragmentCount?`${fragmentCount} 个原碎块`:null,cutCount?`${cutCount} 个切割骰子`:null,realCount?`${realCount} 个完整骰子`:null].filter(Boolean).join(' · ')||'0 个对象';const p=state.pieces.find(v=>v.id===state.selected),disabled=!p;const typeLabel=p?(p.kind==='real-dice'?'真实六面骰子':(p.kind==='cut-dice'?`双切面骰子 · ${p.value} 点 · 切除 ${p.cutPercent??p.targetCutPercent}%`:(p.value===0?'纯色碎块':p.value+' 点碎块'))):'未选择';$('selectedLabel').textContent=p?`#${p.id} · ${typeLabel}`:'未选择';$('selectionChip').textContent=p?`已选择：${typeLabel}`:'未选择碎块';for(const id of ['sizeRange','rotX','rotY','rotZ','rotateLeft','rotateRight','deleteBtn','resetTransformBtn'])$(id).disabled=disabled;if(p){$('sizeRange').value=Math.round(p.scale*100);$('sizeValue').textContent=`${Math.round(p.scale*100)}%`;for(const axis of ['X','Y','Z']){$('rot'+axis).value=clamp(deg(p['r'+axis.toLowerCase()]),-180,180);$('rot'+axis+'Value').textContent=deg(p['r'+axis.toLowerCase()])+'°';}}}
 function draw(){drawBackground();drawShadows();if(!state.pieces.length)$('emptyState').style.display='block';else $('emptyState').style.display='none';render();updateUI();}
 function resizePieces(oldW,oldH,newW,newH){if(!oldW||!oldH||!newW||!newH)return;const sx=newW/oldW,sy=newH/oldH,uniformScale=Math.sqrt(sx*sy);for(const p of state.pieces){p.x*=sx;p.y*=sy;p.w*=uniformScale;p.h*=uniformScale;p.thickness*=uniformScale;p.outline=p.outline.map(v=>({x:v.x*uniformScale,y:v.y*uniformScale}));destroyPiece(p);makePieceMesh(p);}}
-function resizeCanvas(){const rect=$('workspace').getBoundingClientRect(),hasBg=!!(state.bg&&state.bg.complete&&state.bg.naturalWidth);state.width=hasBg?state.bg.naturalWidth:Math.max(1,rect.width);state.height=hasBg?state.bg.naturalHeight:Math.max(1,rect.height);state.viewScale=hasBg?Math.max(.001,Math.min(rect.width/state.width,rect.height/state.height)):1;state.dpr=hasBg?1:Math.min(window.devicePixelRatio||1,2);const displayWidth=state.width*state.viewScale,displayHeight=state.height*state.viewScale;for(const c of [canvas,backdrop,overlay]){c.width=Math.max(1,Math.round(state.width*state.dpr));c.height=Math.max(1,Math.round(state.height*state.dpr));c.style.width=displayWidth+'px';c.style.height=displayHeight+'px';}bg2d.setTransform(state.dpr,0,0,state.dpr,0,0);over2d.setTransform(state.dpr,0,0,state.dpr,0,0);$('canvasSizeLabel').textContent=hasBg?`· 原图画布 ${state.width} × ${state.height}`:`· 工作区 ${Math.round(state.width)} × ${Math.round(state.height)}`;state.pointer=null;draw();}
+function resizeCanvas(){
+  const rect=$('workspace').getBoundingClientRect(),hasBg=!!(state.bg&&state.bg.complete&&state.bg.naturalWidth);
+  const nextWidth=hasBg?state.bg.naturalWidth:rect.width,nextHeight=hasBg?state.bg.naturalHeight:rect.height;
+  if(!Number.isFinite(nextWidth)||!Number.isFinite(nextHeight)||nextWidth<2||nextHeight<2){
+    state.viewportReady=false;
+    state.viewportError=`预览画布尚未取得有效尺寸（${Math.round(rect.width)} × ${Math.round(rect.height)}）。`;
+    if(window.Mobile3DStudio)notifyNativeState();
+    scheduleViewportRetry();
+    return false;
+  }
+  const wasReady=state.viewportReady,oldWidth=state.width,oldHeight=state.height;
+  state.width=nextWidth;state.height=nextHeight;
+  state.viewScale=hasBg?Math.max(.001,Math.min(rect.width/state.width,rect.height/state.height)):1;
+  state.dpr=hasBg?1:Math.min(window.devicePixelRatio||1,2);
+  const displayWidth=state.width*state.viewScale,displayHeight=state.height*state.viewScale;
+  for(const c of [canvas,backdrop,overlay]){
+    const backingWidth=Math.max(1,Math.round(state.width*state.dpr)),backingHeight=Math.max(1,Math.round(state.height*state.dpr));
+    if(c.width!==backingWidth)c.width=backingWidth;
+    if(c.height!==backingHeight)c.height=backingHeight;
+    c.style.width=displayWidth+'px';c.style.height=displayHeight+'px';
+  }
+  bg2d.setTransform(state.dpr,0,0,state.dpr,0,0);over2d.setTransform(state.dpr,0,0,state.dpr,0,0);
+  $('canvasSizeLabel').textContent=hasBg?`· 原图画布 ${state.width} × ${state.height}`:`· 工作区 ${Math.round(state.width)} × ${Math.round(state.height)}`;
+  state.pointer=null;state.viewportReady=canvas.width>1&&canvas.height>1&&glReady&&!gl.isContextLost();state.viewportError=state.viewportReady?'':'';
+  if(state.viewportReady){viewportRetryCount=0;if(viewportRetryFrame){cancelAnimationFrame(viewportRetryFrame);viewportRetryFrame=0;}draw();if(window.Mobile3DStudio&&(!wasReady||oldWidth!==state.width||oldHeight!==state.height))notifyNativeState();}
+  return state.viewportReady;
+}
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),2100);}
 function addPieces(text){const chars=String(text).replace(/\s+/g,'').split('').filter(c=>/^[0-9]$/.test(c));if(!chars.length){$('inputMessage').textContent='请输入 0–9 之间的数字。';toast('没有找到有效数字，请输入 0–9');return;}const invalid=String(text).replace(/[0-9\s]/g,'');$('inputMessage').textContent=invalid?'已忽略非 0–9 字符，只生成有效数字。':`准备生成 ${chars.length} 个独立碎块。`;const w=state.width,h=state.height,unit=state.bg?Math.min(w,h)/600:1,cols=Math.max(1,Math.ceil(Math.sqrt(chars.length))),rows=Math.max(1,Math.ceil(chars.length/cols));chars.forEach((n,i)=>{const c=i%cols,r=Math.floor(i/cols),cellW=Math.min(w*.76/cols,126*unit),cellH=Math.min(h*.64/rows,116*unit),x=cols===1?rand(-w*.17,w*.17):(c-(cols-1)/2)*cellW+rand(-12*unit,12*unit),y=rows===1?rand(-h*.12,h*.12):(r-(rows-1)/2)*cellH+rand(-12*unit,12*unit);state.pieces.push(makePiece(Number(n),x,y));});state.selected=state.pieces[state.pieces.length-1].id;draw();toast(`已生成 ${chars.length} 个真实三维骰子碎块`);}
 function addRealDice(){if(!glReady){toast('WebGL 不可用，无法生成真实骰子');return;}const p=makeRealDicePiece();state.pieces.push(p);state.selected=p.id;draw();toast('已添加真实六面骰子（红色几何凹点）');}
@@ -609,7 +637,8 @@ function syncCardRotationUI(){if(!state.card)return;for(const axis of ['X','Y','
 function setCardAxis(axis,value){if(!state.card)return;state.card['r'+axis.toLowerCase()]=rad(Number(value));$('cardRot'+axis+'Value').textContent=Number(value)+'°';draw();}
 $('cardSizeRange').addEventListener('input',e=>{if(!state.card)return;state.card.scale=Number(e.target.value)/100;$('cardSizeValue').textContent=e.target.value+'%';draw();});for(const axis of ['X','Y','Z'])$('cardRot'+axis).addEventListener('input',e=>setCardAxis(axis,e.target.value));$('cardRotateLeft').addEventListener('click',()=>{if(!state.card)return;state.card.rz-=rad(15);syncCardRotationUI();draw();});$('cardRotateRight').addEventListener('click',()=>{if(!state.card)return;state.card.rz+=rad(15);syncCardRotationUI();draw();});$('cardFlip').addEventListener('click',()=>{if(!state.card)return;state.card.ry+=rad(180);syncCardRotationUI();draw();});$('cardReset').addEventListener('click',()=>{if(!state.card)return;state.card.x=0;state.card.y=0;state.card.z=26;state.card.scale=1;state.card.rx=0;state.card.ry=0;state.card.rz=0;$('cardSizeRange').value=100;$('cardSizeValue').textContent='100%';syncCardRotationUI();draw();});$('cardDelete').addEventListener('click',()=>{if(state.card&&state.card.mesh){for(const key of ['front','back','side'])if(state.card.mesh[key])gl.deleteBuffer(state.card.mesh[key].buffer);}if(cardTextures&&gl){if(cardTextures.front)gl.deleteTexture(cardTextures.front);if(cardTextures.back)gl.deleteTexture(cardTextures.back);}cardTextures=null;state.card=null;state.cardHit=null;setCardControlsEnabled(false);$('addPokerCardBtn').disabled=false;$('cardStatus').textContent='扑克牌已移除。点击“手动添加黑桃 Q”可再次载入。';draw();toast('已移除扑克牌');});
 $('backgroundInput').addEventListener('change',e=>{const file=e.target.files&&e.target.files[0];if(!file)return;if(!/^image\/(png|jpeg|webp)$/.test(file.type)){toast('请选择 JPG、PNG 或 WebP 图片');e.target.value='';return;}if(file.size>25*1024*1024){toast('背景图片不能超过 25 MB');e.target.value='';return;}const url=URL.createObjectURL(file),img=new Image();img.onload=()=>{const oldW=state.width,oldH=state.height;if(state.bg&&state.bg.src.startsWith('blob:'))URL.revokeObjectURL(state.bg.src);state.bg=img;state.bgFit='cover';state.backgroundFileName=file.name;['bgFitBtn','bgFillBtn','removeBgBtn'].forEach(id=>$(id).disabled=false);resizeCanvas();resizePieces(oldW,oldH,state.width,state.height);draw();toast(`背景已载入，画布 ${img.naturalWidth} × ${img.naturalHeight}`);};img.onerror=()=>{URL.revokeObjectURL(url);toast('图片读取失败');};img.src=url;});$('bgFitBtn').addEventListener('click',()=>{state.bgFit='contain';draw();toast('背景已适应画布');});$('bgFillBtn').addEventListener('click',()=>{state.bgFit='cover';draw();toast('背景已填满画布');});$('removeBgBtn').addEventListener('click',()=>{const oldW=state.width,oldH=state.height;if(state.bg&&state.bg.src.startsWith('blob:'))URL.revokeObjectURL(state.bg.src);state.bg=null;state.backgroundFileName='';$('backgroundInput').value='';['bgFitBtn','bgFillBtn','removeBgBtn'].forEach(id=>$(id).disabled=true);resizeCanvas();resizePieces(oldW,oldH,state.width,state.height);draw();toast('已移除背景');});
-canvas.addEventListener('pointerdown',pointerDown);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerUp);canvas.addEventListener('pointercancel',pointerUp);canvas.addEventListener('lostpointercapture',pointerUp);window.addEventListener('keydown',e=>{if(e.target.matches('input'))return;if((e.key==='Delete'||e.key==='Backspace')&&state.selected!==null)$('deleteBtn').click();if(e.key==='Escape'){state.selected=null;draw();}});window.addEventListener('resize',resizeCanvas);if('ResizeObserver'in window)new ResizeObserver(resizeCanvas).observe($('workspace'));
+canvas.addEventListener('pointerdown',pointerDown);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerUp);canvas.addEventListener('pointercancel',pointerUp);canvas.addEventListener('lostpointercapture',pointerUp);window.addEventListener('keydown',e=>{if(e.target.matches('input'))return;if((e.key==='Delete'||e.key==='Backspace')&&state.selected!==null)$('deleteBtn').click();if(e.key==='Escape'){state.selected=null;draw();}});window.addEventListener('resize',resizeCanvas);window.addEventListener('orientationchange',resizeCanvas);if(window.visualViewport)window.visualViewport.addEventListener('resize',resizeCanvas);if('ResizeObserver'in window)new ResizeObserver(resizeCanvas).observe($('workspace'));
+canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();glReady=false;state.viewportReady=false;rendererError='WebGL 图形上下文已丢失，请重新进入模型工作区。';console.error(rendererError);if(window.Mobile3DStudio)notifyNativeState();});
 if(!initGL()){document.querySelector('.empty-state').style.display='block';document.querySelector('.empty-state').innerHTML='<strong>当前设备不支持 WebGL</strong>无法启动三维渲染。';$('cardStatus').textContent='当前设备未能初始化 WebGL。';}resizeCanvas();
 
 // Native Android host API. The original WebGL mesh generators, shaders and render path stay intact.
@@ -644,7 +673,7 @@ function nativeStatePayload(){
     x:p.x/(minSize*.28),y:-p.y/(minSize*.28),z:p.z/120,
     rx:deg(p.rx),ry:deg(p.ry),rz:deg(p.rz)
   }:null;
-  return JSON.stringify({objects,selected,canUndo:nativeUndoStack.length>0,ready:!!glReady,error:rendererError||null});
+  return JSON.stringify({objects,selected,canUndo:nativeUndoStack.length>0,ready:!!glReady&&!!state.viewportReady,error:rendererError||state.viewportError||null,viewport:{width:state.width,height:state.height,backingWidth:canvas.width,backingHeight:canvas.height}});
 }
 function notifyNativeState(){
   try{if(window.AndroidBridge&&typeof window.AndroidBridge.onSceneState==='function')window.AndroidBridge.onSceneState(nativeStatePayload());}catch(e){console.warn('Native bridge notification failed',e);}
@@ -906,23 +935,65 @@ async function exportGlb(){
   await sendExportBytes('glb',`Mobile3DStudio-Scene-${Date.now()}.glb`,bytes);toast('GLB 场景导出完成');return true;
 }
 
+function nextRenderFrame(){return new Promise(resolve=>requestAnimationFrame(()=>resolve()));}
+function projectedHullVisible(hull){
+  const points=(hull||[]).filter(point=>point&&Number.isFinite(point.x)&&Number.isFinite(point.y)&&point.z>=0&&point.z<=1);
+  if(points.length<3)return false;
+  const minX=Math.min(...points.map(point=>point.x)),maxX=Math.max(...points.map(point=>point.x));
+  const minY=Math.min(...points.map(point=>point.y)),maxY=Math.max(...points.map(point=>point.y));
+  return maxX>0&&minX<state.width&&maxY>0&&minY<state.height;
+}
+function inspectRenderedFrame(expectedObject=null){
+  if(!glReady||!state.viewportReady||gl.isContextLost())throw new Error('WebGL 或预览画布尚未就绪。');
+  const width=gl.drawingBufferWidth||canvas.width,height=gl.drawingBufferHeight||canvas.height;
+  if(width<2||height<2)throw new Error(`WebGL 绘制缓冲区尺寸无效：${width} × ${height}。`);
+  const pixels=new Uint8Array(width*height*4);
+  gl.finish();gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+  let visiblePixels=0;
+  for(let i=3;i<pixels.length;i+=4)if(pixels[i]>16)visiblePixels++;
+  const glError=gl.getError();
+  let expectedObjectVisible=true;
+  if(expectedObject&&expectedObject.kind==='poker')expectedObjectVisible=!!(state.card&&state.card.id===expectedObject.id&&state.cardHit&&projectedHullVisible(state.cardHit.hull));
+  else if(expectedObject&&Number.isFinite(expectedObject.id)){const target=state.hitTargets.find(item=>item.id===expectedObject.id);expectedObjectVisible=!!(target&&projectedHullVisible(target.hull));}
+  return {width,height,visiblePixels,glError,objects:state.pieces.length+(state.card?1:0),expectedObjectVisible};
+}
+async function confirmRenderedFrame(expectedObject=null){
+  if(!state.viewportReady)resizeCanvas();
+  if(!state.viewportReady)throw new Error(state.viewportError||'预览画布尚未完成布局，请稍后再生成。');
+  await nextRenderFrame();draw();await nextRenderFrame();
+  const result=inspectRenderedFrame(expectedObject);
+  if(!result.expectedObjectVisible)throw new Error('模型已加入场景，但模型投影不在当前预览画布可视范围内。');
+  if(result.visiblePixels===0)throw new Error(`模型已加入场景，但 WebGL 没有绘制出可见像素（画布 ${result.width} × ${result.height}，GL 错误码 ${result.glError}）。`);
+  if(result.glError!==gl.NO_ERROR)console.warn('WebGL render completed with a GL warning code:',result.glError);
+  return result;
+}
+
 window.Mobile3DStudio={
-  ready:()=>!!glReady,
+  ready:()=>!!glReady&&!!state.viewportReady&&!gl.isContextLost(),
+  refreshViewport:()=>{resizeCanvas();return JSON.stringify({ready:!!state.viewportReady,width:state.width,height:state.height,backingWidth:canvas.width,backingHeight:canvas.height,error:state.viewportError||rendererError||null});},
+  diagnostics:()=>({ready:!!glReady&&!!state.viewportReady,glReady:!!glReady,viewportReady:!!state.viewportReady,viewportError:state.viewportError||null,rendererError:rendererError||null,width:state.width,height:state.height,canvasWidth:canvas.width,canvasHeight:canvas.height,objectCount:state.pieces.length+(state.card?1:0),contextLost:!!(gl&&gl.isContextLost())}),
   exportPng:()=>exportPng().catch(error=>{toast('PNG 导出失败：'+(error&&error.message?error.message:'未知错误'));throw error;}),
   exportGlb:()=>exportGlb().catch(error=>{toast('GLB 导出失败：'+(error&&error.message?error.message:'未知错误'));throw error;}),
-  addIrregularDice:value=>{
-    const n=Number(value);if(!Number.isInteger(n)||n<0||n>9)return false;if(!glReady)return false;
+  addIrregularDice:async value=>{
+    const n=Number(value);if(!Number.isInteger(n)||n<0||n>9)throw new Error('点数必须是 0–9 之间的整数。');
+    if(!glReady||!state.viewportReady){resizeCanvas();if(!glReady||!state.viewportReady)throw new Error(state.viewportError||rendererError||'3D 预览画布尚未就绪。');}
     pushUndoState();
-    try{const before=state.pieces.length;state.card&&(state.card.selected=false);addPieces(String(n));if(state.pieces.length!==before+1)throw new Error('没有创建出骰子对象。');notifyNativeState();return true;}
-    catch(error){nativeUndo();toast('骰子 1 生成失败：'+(error&&error.message?error.message:'未知错误'));notifyNativeState();return false;}
+    try{const before=state.pieces.length;state.card&&(state.card.selected=false);addPieces(String(n));if(state.pieces.length!==before+1)throw new Error('没有创建出骰子对象。');await confirmRenderedFrame({id:state.pieces[state.pieces.length-1].id});notifyNativeState();return true;}
+    catch(error){nativeUndo();toast('骰子 1 生成失败：'+(error&&error.message?error.message:'未知错误'));notifyNativeState();throw error;}
   },
-  addCutDice:value=>{
-    const n=Number(value);if(!Number.isInteger(n)||n<0||n>9)return false;if(!glReady)return false;
+  addCutDice:async value=>{
+    const n=Number(value);if(!Number.isInteger(n)||n<0||n>9)throw new Error('点数必须是 0–9 之间的整数。');
+    if(!glReady||!state.viewportReady){resizeCanvas();if(!glReady||!state.viewportReady)throw new Error(state.viewportError||rendererError||'3D 预览画布尚未就绪。');}
     pushUndoState();
-    try{const before=state.pieces.length;state.card&&(state.card.selected=false);addCutDicePieces(String(n));if(state.pieces.length!==before+1)throw new Error('没有创建出双切面骰子对象。');notifyNativeState();return true;}
-    catch(error){nativeUndo();toast('骰子 2 生成失败：'+(error&&error.message?error.message:'未知错误'));notifyNativeState();return false;}
+    try{const before=state.pieces.length;state.card&&(state.card.selected=false);addCutDicePieces(String(n));if(state.pieces.length!==before+1)throw new Error('没有创建出双切面骰子对象。');await confirmRenderedFrame({id:state.pieces[state.pieces.length-1].id});notifyNativeState();return true;}
+    catch(error){nativeUndo();toast('骰子 2 生成失败：'+(error&&error.message?error.message:'未知错误'));notifyNativeState();throw error;}
   },
-  addPoker:()=>loadPokerCardOnDemand(),
+  addPoker:async()=>{
+    if(!glReady||!state.viewportReady){resizeCanvas();if(!glReady||!state.viewportReady)throw new Error(state.viewportError||rendererError||'3D 预览画布尚未就绪。');}
+    const hadCard=!!state.card,created=await loadPokerCardOnDemand();
+    try{await confirmRenderedFrame({kind:'poker',id:state.card&&state.card.id});return created;}
+    catch(error){if(!hadCard)nativeUndo();throw error;}
+  },
   selectObject:id=>nativeSelectObject(id),
   beginTransformBatch:()=>{if(!nativeTransformBatchOpen){pushUndoState();nativeTransformBatchOpen=true;}},
   setTransform:(axis,value)=>nativeSetTransform(String(axis),Number(value)),
