@@ -162,33 +162,75 @@ fun Mobile3DStudioApp() {
     }
 
     fun runEngineCommand(expression: String, successMessage: String) {
-        val target = webView ?: run {
-            scope.launch { snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请稍后重试。") }
-            return
+    val target = webView ?: run {
+        scope.launch {
+            snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请稍后重试。")
         }
-        val script = """
-            (function(){
-              const report=(ok,message)=>{
-                try{if(window.AndroidBridge&&typeof window.AndroidBridge.onCommandResult==='function')window.AndroidBridge.onCommandResult(!!ok,String(message||''));}
-                catch(bridgeError){console.error('Native command callback failed',bridgeError);}
-              };
-              try{
-                const api=window.Mobile3DStudio;
-                if(!api){report(false,'3D 引擎接口尚未加载，请稍后重试。');return;}
-                if(typeof api.ready==='function'&&!api.ready()){
-                  const detail=typeof api.diagnostics==='function'?api.diagnostics():null;
-                  report(false,(detail&&(detail.viewportError||detail.rendererError))||'3D WebGL 预览画布尚未就绪，请稍后重试。');
-                  return;
-                }
-                Promise.resolve($expression).then(result=>{
-                  if(result===true)report(true,${org.json.JSONObject.quote(successMessage)});
-                  else report(false,'操作未完成，请检查 3D 引擎状态。');
-                }).catch(error=>report(false,error&&error.message?error.message:'操作时发生未知错误。'));
-              }catch(error){report(false,error&&error.message?error.message:'操作调用失败。');}
-            })();
-        """.trimIndent()
-        target.post { target.evaluateJavascript(script, null) }
+        return
     }
+
+    val script = """
+        (function(){
+          const report=(ok,message)=>{
+            try{
+              if(
+                window.AndroidBridge &&
+                typeof window.AndroidBridge.onCommandResult==='function'
+              ){
+                window.AndroidBridge.onCommandResult(
+                  !!ok,
+                  String(message||'')
+                );
+              }
+            }catch(bridgeError){
+              console.error('Native command callback failed',bridgeError);
+            }
+          };
+
+          try{
+            const api=window.Mobile3DStudio;
+
+            // 检查 3D 引擎接口是否存在。
+            if(!api){
+              report(false,'3D 引擎接口尚未加载，请稍后重试。');
+              return;
+            }
+
+            // 直接执行模型生成命令。
+            // WebGL 和画布状态由模型接口内部负责检查。
+            Promise.resolve($expression)
+              .then(result=>{
+                if(result===true){
+                  report(true,${org.json.JSONObject.quote(successMessage)});
+                }else{
+                  report(false,'操作未完成，请检查 3D 引擎状态。');
+                }
+              })
+              .catch(error=>{
+                report(
+                  false,
+                  error&&error.message
+                    ? error.message
+                    : '操作时发生未知错误。'
+                );
+              });
+
+          }catch(error){
+            report(
+              false,
+              error&&error.message
+                ? error.message
+                : '操作调用失败。'
+            );
+          }
+        })();
+    """.trimIndent()
+
+    target.post {
+        target.evaluateJavascript(script, null)
+    }
+}
+
 
     fun applySceneState(json: String) {
         runCatching {
@@ -299,20 +341,24 @@ fun Mobile3DStudioApp() {
         onModelTypeSelect = { selectedModelType = it },
         onPointInputChange = { pointInput = it },
         onGenerateModel = {
-            if (!rendererReady) {
-                scope.launch {
-                    snackbarHostState.showSnackbar(
-                        rendererError ?: "3D 引擎尚未就绪，请稍候再试；如果持续不就绪，请重新进入模型页。"
-                    )
-                }
-            } else {
-                when (selectedModelType) {
-                    MODEL_FRAGMENT -> runEngineCommand("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})", "骰子模型已生成。")
-                    MODEL_CUT -> runEngineCommand("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})", "双切面骰子已生成。")
-                    MODEL_POKER -> runEngineCommand("window.Mobile3DStudio.addPoker()", "黑桃 Q 已生成。")
-                }
-            }
-        },
+    when (selectedModelType) {
+        MODEL_FRAGMENT -> runEngineCommand(
+            "window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})",
+            "骰子模型已生成。"
+        )
+
+        MODEL_CUT -> runEngineCommand(
+            "window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})",
+            "双切面骰子已生成。"
+        )
+
+        MODEL_POKER -> runEngineCommand(
+            "window.Mobile3DStudio.addPoker()",
+            "黑桃 Q 已生成。"
+        )
+    }
+},
+
         onModelTransformChange = { axis, value ->
             runJs("window.Mobile3DStudio.setTransform('$axis',$value)")
         },
