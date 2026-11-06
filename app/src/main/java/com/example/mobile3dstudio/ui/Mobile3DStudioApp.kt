@@ -175,6 +175,11 @@ fun Mobile3DStudioApp() {
               try{
                 const api=window.Mobile3DStudio;
                 if(!api){report(false,'3D 引擎接口尚未加载，请稍后重试。');return;}
+                if(typeof api.ready==='function'&&!api.ready()){
+                  const detail=typeof api.diagnostics==='function'?api.diagnostics():null;
+                  report(false,(detail&&(detail.viewportError||detail.rendererError))||'3D WebGL 预览画布尚未就绪，请稍后重试。');
+                  return;
+                }
                 Promise.resolve($expression).then(result=>{
                   if(result===true)report(true,${org.json.JSONObject.quote(successMessage)});
                   else report(false,'操作未完成，请检查 3D 引擎状态。');

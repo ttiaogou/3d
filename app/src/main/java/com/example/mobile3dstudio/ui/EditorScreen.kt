@@ -430,12 +430,12 @@ private fun ModelWorkbench(
                 }
                 Button(
                     onClick = onGenerateModel,
-                    enabled = selectedModelType == MODEL_POKER || pointInput.isNotBlank()
+                    enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
                 ) { Text("生成模型") }
             }
             if (!rendererReady) {
                 Text(
-                    rendererError ?: "3D 渲染器初始化中…点击生成会显示当前状态。",
+                    rendererError ?: "3D 渲染器与预览画布初始化中…",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
