@@ -46,15 +46,20 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
+
+private enum class ModelGestureMode { NONE, MOVE, ROTATE }
 
 private class ViewportTouchState {
-    var movingModelId: Long? = null
-    var lastMoveX = 0f
-    var lastMoveY = 0f
+    var activeModelId: Long? = null
+    var gestureMode = ModelGestureMode.NONE
     var pressDownX = 0f
     var pressDownY = 0f
-    var twoFingerX = 0f
-    var twoFingerY = 0f
+    var lastX = 0f
+    var lastY = 0f
+    var didTransform = false
+    var longPressTriggered = false
     var pendingLongPress: Runnable? = null
     val gestureTransforms = mutableMapOf<Long, NativeTransform>()
 }
@@ -140,40 +145,14 @@ fun NativeSceneViewport(
                 latestOnModelSelected.value(modelId(node))
             }
 
-            override fun onMoveBegin(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {
-                touchState.movingModelId = modelId(node) ?: latestSelectedModelId.value
-                touchState.lastMoveX = 0f
-                touchState.lastMoveY = 0f
-            }
-
-            override fun onMove(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {
-                val id = touchState.movingModelId ?: return
-                val current = currentTransform(id) ?: return
-                val totalX = detector.lastDistanceX ?: 0f
-                val totalY = detector.lastDistanceY ?: 0f
-                val dx = totalX - touchState.lastMoveX
-                val dy = totalY - touchState.lastMoveY
-                touchState.lastMoveX = totalX
-                touchState.lastMoveY = totalY
-                submitTransform(id, current.copy(x = current.x + dx / 260f, y = current.y - dy / 260f))
-            }
-
-            override fun onMoveEnd(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {
-                touchState.movingModelId = null
-                finishGesture(modelId(node) ?: latestSelectedModelId.value)
-            }
-
+            // Single-finger movement and edge rotation are handled from the raw touch stream below.
+            // Keep the library's scale callbacks so two-finger pinch-to-scale remains available.
+            override fun onMoveBegin(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {}
+            override fun onMove(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {}
+            override fun onMoveEnd(detector: MoveGestureDetector, e: MotionEvent, node: SceneNode?) {}
             override fun onRotateBegin(detector: RotateGestureDetector, e: MotionEvent, node: SceneNode?) {}
-
-            override fun onRotate(detector: RotateGestureDetector, e: MotionEvent, node: SceneNode?) {
-                val id = modelId(node) ?: latestSelectedModelId.value ?: return
-                val current = currentTransform(id) ?: return
-                submitTransform(id, current.copy(rz = current.rz + detector.rotation))
-            }
-
-            override fun onRotateEnd(detector: RotateGestureDetector, e: MotionEvent, node: SceneNode?) {
-                finishGesture(modelId(node) ?: latestSelectedModelId.value)
-            }
+            override fun onRotate(detector: RotateGestureDetector, e: MotionEvent, node: SceneNode?) {}
+            override fun onRotateEnd(detector: RotateGestureDetector, e: MotionEvent, node: SceneNode?) {}
 
             override fun onScaleBegin(detector: ScaleGestureDetector, e: MotionEvent, node: SceneNode?) {}
 
@@ -203,49 +182,89 @@ fun NativeSceneViewport(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
-                    val id = modelId(hitResult?.node)
+                    touchState.pendingLongPress = null
+                    touchState.activeModelId = modelId(hitResult?.node)
                     touchState.pressDownX = event.x
                     touchState.pressDownY = event.y
+                    touchState.lastX = event.x
+                    touchState.lastY = event.y
+                    touchState.didTransform = false
+                    touchState.longPressTriggered = false
+
+                    val id = touchState.activeModelId
                     if (id != null) {
-                        val task = Runnable { latestOnLongPress.value(id) }
+                        val model = latestModels.value.firstOrNull { it.id == id }
+                        val wasSelected = latestSelectedModelId.value == id
+                        touchState.gestureMode = if (wasSelected && isModelEdgeHit(hitResult, model)) {
+                            ModelGestureMode.ROTATE
+                        } else {
+                            ModelGestureMode.MOVE
+                        }
+                        latestOnModelSelected.value(id)
+                        val task = Runnable {
+                            touchState.longPressTriggered = true
+                            touchState.gestureMode = ModelGestureMode.NONE
+                            touchState.activeModelId = null
+                            latestOnLongPress.value(id)
+                        }
                         touchState.pendingLongPress = task
-                        mainHandler.postDelayed(task, 2_000L)
+                        mainHandler.postDelayed(task, LONG_PRESS_TIMEOUT_MS)
+                    } else {
+                        touchState.gestureMode = ModelGestureMode.NONE
                     }
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (event.pointerCount >= 2) {
-                        touchState.twoFingerX = (event.getX(0) + event.getX(1)) * 0.5f
-                        touchState.twoFingerY = (event.getY(0) + event.getY(1)) * 0.5f
-                    }
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                     touchState.pendingLongPress = null
+                    touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
+                    touchState.activeModelId = null
+                    touchState.gestureMode = ModelGestureMode.NONE
+                    touchState.didTransform = false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (event.pointerCount >= 2) {
-                        val id = latestSelectedModelId.value
-                        if (id != null) {
-                            val midX = (event.getX(0) + event.getX(1)) * 0.5f
-                            val midY = (event.getY(0) + event.getY(1)) * 0.5f
-                            val dx = midX - touchState.twoFingerX
-                            val dy = midY - touchState.twoFingerY
-                            if (abs(dx) + abs(dy) > 0.5f) {
+                    if (event.pointerCount == 1 && !touchState.longPressTriggered) {
+                        val id = touchState.activeModelId
+                        val dx = event.x - touchState.lastX
+                        val dy = event.y - touchState.lastY
+                        val crossedTouchSlop =
+                            abs(event.x - touchState.pressDownX) > touchSlop ||
+                            abs(event.y - touchState.pressDownY) > touchSlop
+
+                        if (crossedTouchSlop) {
+                            touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
+                            touchState.pendingLongPress = null
+                            if (id != null && touchState.gestureMode != ModelGestureMode.NONE &&
+                                (abs(dx) + abs(dy)) > 0.01f
+                            ) {
                                 val current = currentTransform(id)
                                 if (current != null) {
-                                    submitTransform(id, current.copy(z = current.z - dy / 850f, rx = current.rx + dy * 0.22f, ry = current.ry + dx * 0.22f))
+                                    val next = when (touchState.gestureMode) {
+                                        ModelGestureMode.MOVE -> current.copy(
+                                            x = current.x + dx / MODEL_DRAG_PIXELS_PER_UNIT,
+                                            y = current.y - dy / MODEL_DRAG_PIXELS_PER_UNIT
+                                        )
+                                        ModelGestureMode.ROTATE -> current.copy(
+                                            rx = current.rx + dy * EDGE_ROTATION_DEGREES_PER_PIXEL,
+                                            ry = current.ry + dx * EDGE_ROTATION_DEGREES_PER_PIXEL
+                                        )
+                                        ModelGestureMode.NONE -> current
+                                    }
+                                    submitTransform(id, next)
+                                    touchState.didTransform = true
                                 }
                             }
-                            touchState.twoFingerX = midX
-                            touchState.twoFingerY = midY
                         }
-                    }
-                    if (abs(event.x - touchState.pressDownX) > touchSlop || abs(event.y - touchState.pressDownY) > touchSlop) {
-                        touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
-                        touchState.pendingLongPress = null
+                        touchState.lastX = event.x
+                        touchState.lastY = event.y
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                     touchState.pendingLongPress = null
+                    touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
+                    touchState.activeModelId = null
+                    touchState.gestureMode = ModelGestureMode.NONE
+                    touchState.didTransform = false
                 }
             }
             false
@@ -282,7 +301,7 @@ fun NativeSceneViewport(
                     position = Position(t.x, t.y, t.z),
                     rotation = Rotation(t.rx, t.ry, t.rz),
                     scale = Scale(t.scale),
-                    apply = { name = model.id.toString() }
+                    apply = { name = model.id.toString(); configureManualModelGestures() }
                 ) {
                     if (!model.sourceFilePath.isNullOrBlank()) {
                         val source = model.sourceFilePath
@@ -298,7 +317,7 @@ fun NativeSceneViewport(
                                     position = Position(0f, 0f, 0f),
                                     rotation = Rotation(0f, 0f, 0f),
                                     scale = Scale(1f),
-                                    apply = { name = model.id.toString() }
+                                    apply = { name = model.id.toString(); configureManualModelGestures() }
                                 )
                             }
                         } else {
@@ -346,7 +365,7 @@ fun NativeSceneViewport(
                                     bitmap = frontBitmap,
                                     size = Size(0.84f, 1.25f),
                                     position = Position(0f, 0f, 0.0102f),
-                                    apply = { name = model.id.toString() }
+                                    apply = { name = model.id.toString(); configureManualModelGestures() }
                                 )
                             }
                             if (backBitmap != null) {
@@ -355,7 +374,7 @@ fun NativeSceneViewport(
                                     size = Size(0.84f, 1.25f),
                                     position = Position(0f, 0f, -0.0102f),
                                     rotation = Rotation(y = 180f),
-                                    apply = { name = model.id.toString() }
+                                    apply = { name = model.id.toString(); configureManualModelGestures() }
                                 )
                             }
                         }
@@ -391,8 +410,72 @@ private fun SceneScope.ProceduralMesh(
         indexBuffer = geometry.indexBuffer,
         boundingBox = geometry.boundingBox,
         materialInstance = material,
-        apply = { name = nodeName }
+        apply = { name = nodeName; configureManualModelGestures() }
     )
+}
+
+/**
+ * Marks a hit-tested model node as an editing target so SceneView does not orbit the camera,
+ * while disabling its built-in axis transforms; the editor applies its own single-finger rules.
+ */
+private fun SceneNode.configureManualModelGestures() {
+    isEditable = true
+    isPositionEditable = false
+    isRotationEditable = false
+    isScaleEditable = false
+}
+
+private const val LONG_PRESS_TIMEOUT_MS = 1_500L
+private const val MODEL_DRAG_PIXELS_PER_UNIT = 180f
+private const val EDGE_ROTATION_DEGREES_PER_PIXEL = 0.45f
+private const val MODEL_EDGE_THRESHOLD = 0.74f
+private const val CARD_EDGE_THRESHOLD = 0.78f
+
+/** Returns true when the initial contact point lies near the model's silhouette edge. */
+private fun isModelEdgeHit(hitResult: HitResult?, model: NativeSceneModel?): Boolean {
+    if (hitResult == null || model == null) return false
+    val hit = runCatching { hitResult.getPoint() }.getOrNull() ?: return false
+    val transform = model.transform
+    val dx = hit.x - transform.x
+    val dy = hit.y - transform.y
+    val dz = hit.z - transform.z
+    val radians = (Math.PI / 180.0).toFloat()
+    val rx = transform.rx * radians
+    val ry = transform.ry * radians
+    val rz = transform.rz * radians
+
+    // Undo the node's Z-Y-X Euler rotation, then its uniform scale and translation.
+    val cosZ = cos(rz)
+    val sinZ = sin(rz)
+    val x1 = cosZ * dx + sinZ * dy
+    val y1 = -sinZ * dx + cosZ * dy
+    val z1 = dz
+    val cosY = cos(ry)
+    val sinY = sin(ry)
+    val x2 = cosY * x1 - sinY * z1
+    val y2 = y1
+    val z2 = sinY * x1 + cosY * z1
+    val cosX = cos(rx)
+    val sinX = sin(rx)
+    val localX = x2 / transform.scale.coerceAtLeast(0.001f)
+    val localY = (cosX * y2 + sinX * z2) / transform.scale.coerceAtLeast(0.001f)
+    val localZ = (-sinX * y2 + cosX * z2) / transform.scale.coerceAtLeast(0.001f)
+
+    val edgeRatio = if (model.kind == NativeModelKind.POKER_CARD && model.sourceFilePath == null) {
+        maxOf(abs(localX) / 0.46f, abs(localY) / 0.67f)
+    } else {
+        val halfExtent = if (model.sourceFilePath != null) 0.60f else 0.62f
+        listOf(abs(localX), abs(localY), abs(localZ))
+            .map { it / halfExtent }
+            .sortedDescending()
+            .getOrElse(1) { 0f }
+    }
+    val threshold = if (model.kind == NativeModelKind.POKER_CARD && model.sourceFilePath == null) {
+        CARD_EDGE_THRESHOLD
+    } else {
+        MODEL_EDGE_THRESHOLD
+    }
+    return edgeRatio >= threshold
 }
 
 private fun decodeAsset(context: Context, path: String): Bitmap? = runCatching {
