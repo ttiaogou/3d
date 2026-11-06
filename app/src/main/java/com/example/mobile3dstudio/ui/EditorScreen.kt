@@ -1,7 +1,7 @@
 package com.example.mobile3dstudio.ui
 
 import android.graphics.Bitmap
-import android.webkit.WebView
+import android.graphics.Rect
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -41,10 +41,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.mobile3dstudio.ui.scene.DiceSceneWebView
+import com.example.mobile3dstudio.core.model.NativeSceneModel
+import com.example.mobile3dstudio.ui.scene.NativeSceneViewport
+import kotlin.math.roundToInt
 
 const val MODEL_FRAGMENT = "fragment-dice"
 const val MODEL_CUT = "cut-dice"
@@ -77,9 +81,11 @@ fun EditorScreen(
     canUndo: Boolean,
     rendererReady: Boolean,
     rendererError: String?,
-    onEngineMessage: (Boolean, String) -> Unit,
-    onWebViewReady: (WebView) -> Unit,
-    onSceneState: (String) -> Unit,
+    nativeModels: List<NativeSceneModel>,
+    onNativeModelSelected: (Long?) -> Unit,
+    onRendererFrame: () -> Unit,
+    onRendererError: (String) -> Unit,
+    onPreviewBoundsChanged: (Rect) -> Unit,
     onImportImage: () -> Unit,
     onRemoveImage: () -> Unit,
     onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
@@ -93,8 +99,7 @@ fun EditorScreen(
     onDefaultModel: () -> Unit,
     onUndo: () -> Unit,
     onExportPng: () -> Unit,
-    onExportGlb: () -> Unit,
-    onExportFileReady: (String, String, String, Boolean, String) -> Unit
+    onExportGlb: () -> Unit
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -113,6 +118,15 @@ fun EditorScreen(
                     .weight(0.625f)
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        onPreviewBoundsChanged(
+                            Rect(
+                                bounds.left.roundToInt(), bounds.top.roundToInt(),
+                                bounds.right.roundToInt(), bounds.bottom.roundToInt()
+                            )
+                        )
+                    }
             ) {
                 // The imported image is always the workspace background. Entering the model
                 // workbench changes only the lower panel; it never converts or removes the image.
@@ -127,22 +141,18 @@ fun EditorScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Transparent WebGL canvas stays above the image and renders models only.
-                DiceSceneWebView(
+                // The native SceneView/Filament viewport renders procedural Kotlin meshes.
+                // Its transparent texture surface leaves the imported image visible beneath it.
+                NativeSceneViewport(
                     modifier = Modifier.fillMaxSize(),
-                    previewBitmap = imageBitmap,
-                    previewScale = imageScale,
-                    previewOffsetX = imageOffsetX,
-                    previewOffsetY = imageOffsetY,
-                    previewRotation = imageRotation,
-                    onWebViewReady = onWebViewReady,
-                    onSceneState = onSceneState,
-                    onCommandResult = onEngineMessage,
-                    onExportFileReady = onExportFileReady
+                    models = nativeModels,
+                    onModelSelected = onNativeModelSelected,
+                    onRendererFrame = onRendererFrame,
+                    onRendererError = onRendererError
                 )
 
-                // In image mode, gestures edit the flat preview. In model mode, touches pass
-                // through to WebView so the user can select and manipulate 3D objects.
+                // In image mode, gestures edit the flat preview. In model mode, taps select
+                // native scene nodes for the transform controls below.
                 if (!isModelWorkspace && imageBitmap != null) {
                     FlatGestureLayer(
                         imageBitmap = imageBitmap,
@@ -429,9 +439,9 @@ private fun ModelWorkbench(
                     }
                 }
                 Button(
-    onClick = onGenerateModel,
-    enabled = selectedModelType == MODEL_POKER || pointInput.isNotBlank()
-) { Text("生成模型") }
+                    onClick = onGenerateModel,
+                    enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
+                ) { Text("生成模型") }
             }
             if (!rendererReady) {
                 Text(

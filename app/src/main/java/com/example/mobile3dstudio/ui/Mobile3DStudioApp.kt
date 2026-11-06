@@ -4,8 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.net.Uri
-import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
@@ -20,12 +20,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.exifinterface.media.ExifInterface
+import com.example.mobile3dstudio.core.model.NativeModelKind
+import com.example.mobile3dstudio.core.model.NativeSceneStateHolder
+import com.example.mobile3dstudio.export.NativeGlbExporter
+import com.example.mobile3dstudio.export.NativePngExporter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FileInputStream
@@ -52,14 +55,24 @@ fun Mobile3DStudioApp() {
     var isModelWorkspace by rememberSaveable { mutableStateOf(false) }
     var selectedModelType by rememberSaveable { mutableStateOf(MODEL_FRAGMENT) }
     var pointInput by rememberSaveable { mutableStateOf("9") }
-    var webView by remember { mutableStateOf<WebView?>(null) }
+    val nativeScene = remember { NativeSceneStateHolder() }
+    val nativeModels = nativeScene.models
+    val selectedObjectId = nativeScene.selectedModelId
+    val selectedTransform = nativeScene.selectedTransform()?.let { transform ->
+        ModelTransformUi(
+            x = transform.x / .55f,
+            y = -transform.y / .55f,
+            z = transform.z / .35f,
+            rx = transform.rx,
+            ry = transform.ry,
+            rz = transform.rz
+        )
+    } ?: ModelTransformUi()
+    val canUndo = nativeScene.canUndo
     var rendererReady by remember { mutableStateOf(false) }
     var rendererError by remember { mutableStateOf<String?>(null) }
-    var sceneObjectCount by remember { mutableStateOf(0) }
+    var previewBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
-    var selectedObjectId by remember { mutableStateOf<Long?>(null) }
-    var selectedTransform by remember { mutableStateOf(ModelTransformUi()) }
-    var canUndo by remember { mutableStateOf(false) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -153,112 +166,6 @@ fun Mobile3DStudioApp() {
         }
     }
 
-    fun runJs(script: String) {
-        val target = webView ?: run {
-            scope.launch { snackbarHostState.showSnackbar("3D 渲染器视图尚未创建，请重新进入模型页。") }
-            return
-        }
-        target.post { target.evaluateJavascript(script, null) }
-    }
-
-    fun runEngineCommand(expression: String, successMessage: String) {
-    val target = webView ?: run {
-        scope.launch {
-            snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请稍后重试。")
-        }
-        return
-    }
-
-    val script = """
-        (function(){
-          const report=(ok,message)=>{
-            try{
-              if(
-                window.AndroidBridge &&
-                typeof window.AndroidBridge.onCommandResult==='function'
-              ){
-                window.AndroidBridge.onCommandResult(
-                  !!ok,
-                  String(message||'')
-                );
-              }
-            }catch(bridgeError){
-              console.error('Native command callback failed',bridgeError);
-            }
-          };
-
-          try{
-            const api=window.Mobile3DStudio;
-
-            // 检查 3D 引擎接口是否存在。
-            if(!api){
-              report(false,'3D 引擎接口尚未加载，请稍后重试。');
-              return;
-            }
-
-            // 直接执行模型生成命令。
-            // WebGL 和画布状态由模型接口内部负责检查。
-            Promise.resolve($expression)
-              .then(result=>{
-                if(result===true){
-                  report(true,${org.json.JSONObject.quote(successMessage)});
-                }else{
-                  report(false,'操作未完成，请检查 3D 引擎状态。');
-                }
-              })
-              .catch(error=>{
-                report(
-                  false,
-                  error&&error.message
-                    ? error.message
-                    : '操作时发生未知错误。'
-                );
-              });
-
-          }catch(error){
-            report(
-              false,
-              error&&error.message
-                ? error.message
-                : '操作调用失败。'
-            );
-          }
-        })();
-    """.trimIndent()
-
-    target.post {
-        target.evaluateJavascript(script, null)
-    }
-}
-
-
-    fun applySceneState(json: String) {
-        runCatching {
-            val root = JSONObject(json)
-            rendererReady = root.optBoolean("ready", false)
-            rendererError = root.optString("error").takeIf { it.isNotBlank() && it != "null" }
-            canUndo = root.optBoolean("canUndo", false)
-            sceneObjectCount = root.optJSONArray("objects")?.length() ?: 0
-            val selected = root.optJSONObject("selected")
-            if (selected == null) {
-                selectedObjectId = null
-                selectedTransform = ModelTransformUi()
-            } else {
-                selectedObjectId = selected.optLong("id")
-                selectedTransform = ModelTransformUi(
-                    x = selected.optDouble("x", 0.0).toFloat(),
-                    y = selected.optDouble("y", 0.0).toFloat(),
-                    z = selected.optDouble("z", 0.0).toFloat(),
-                    rx = selected.optDouble("rx", 0.0).toFloat(),
-                    ry = selected.optDouble("ry", 0.0).toFloat(),
-                    rz = selected.optDouble("rz", 0.0).toFloat()
-                )
-            }
-        }.onFailure { error ->
-            android.util.Log.e("Mobile3DStudio", "Invalid scene state from WebGL", error)
-        }
-    }
-
     val imageBitmap = (imageLoadState as? ImageLoadState.Success)?.bitmap
 
     EditorScreen(
@@ -272,44 +179,22 @@ fun Mobile3DStudioApp() {
         isModelWorkspace = isModelWorkspace,
         selectedModelType = selectedModelType,
         pointInput = pointInput,
-        hasExportContent = imageBitmap != null || sceneObjectCount > 0,
+        hasExportContent = imageBitmap != null || nativeModels.isNotEmpty(),
         selectedObjectId = selectedObjectId,
         selectedTransform = selectedTransform,
         canUndo = canUndo,
         rendererReady = rendererReady,
         rendererError = rendererError,
-        onExportFileReady = { type, path, fileName, success, message ->
-            if (!success || path.isBlank()) {
-                scope.launch { snackbarHostState.showSnackbar(message.ifBlank { "导出文件生成失败。" }) }
-            } else {
-                val file = File(path)
-                if (!file.exists() || file.length() <= 0L) {
-                    scope.launch { snackbarHostState.showSnackbar("导出文件为空，未能保存。") }
-                } else {
-                    pendingExportFile = file
-                    when (type) {
-                        "glb" -> saveGlbLauncher.launch(fileName.ifBlank { "Mobile3DStudio-Scene.glb" })
-                        "png" -> savePngLauncher.launch(fileName.ifBlank { "Mobile3DStudio-Preview.png" })
-                        else -> {
-                            file.delete()
-                            pendingExportFile = null
-                            scope.launch { snackbarHostState.showSnackbar("不支持的导出类型：$type") }
-                        }
-                    }
-                }
-            }
+        nativeModels = nativeModels,
+        onNativeModelSelected = { id -> nativeScene.select(id) },
+        onRendererFrame = {
+            if (!rendererReady) rendererReady = true
+            rendererError = null
         },
-        onEngineMessage = { success, message ->
-            if (!success && !rendererReady) rendererError = message
-            if (success && rendererReady) rendererError = null
-            if (!success || message.isNotBlank()) {
-                scope.launch { snackbarHostState.showSnackbar(message.ifBlank { if (success) "模型生成完成。" else "模型生成失败。" }) }
-            }
+        onRendererError = { message -> rendererError = message },
+        onPreviewBoundsChanged = { bounds ->
+            if (previewBounds != bounds) previewBounds = Rect(bounds)
         },
-        onWebViewReady = { readyView ->
-            if (webView !== readyView) webView = readyView
-        },
-        onSceneState = { json -> applySceneState(json) },
         onImportImage = { imagePicker.launch(arrayOf("image/*")) },
         onRemoveImage = {
             savedImagePath?.let { path -> scope.launch(Dispatchers.IO) { File(path).delete() } }
@@ -341,37 +226,63 @@ fun Mobile3DStudioApp() {
         onModelTypeSelect = { selectedModelType = it },
         onPointInputChange = { pointInput = it },
         onGenerateModel = {
-    when (selectedModelType) {
-        MODEL_FRAGMENT -> runEngineCommand(
-            "window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})",
-            "骰子模型已生成。"
-        )
-
-        MODEL_CUT -> runEngineCommand(
-            "window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})",
-            "双切面骰子已生成。"
-        )
-
-        MODEL_POKER -> runEngineCommand(
-            "window.Mobile3DStudio.addPoker()",
-            "黑桃 Q 已生成。"
-        )
-    }
-},
-
-        onModelTransformChange = { axis, value ->
-            runJs("window.Mobile3DStudio.setTransform('$axis',$value)")
+            runCatching {
+                when (selectedModelType) {
+                    MODEL_FRAGMENT -> nativeScene.add(NativeModelKind.IRREGULAR_DICE, pointInput.toIntOrNull() ?: 9)
+                    MODEL_CUT -> nativeScene.add(NativeModelKind.DOUBLE_CUT_DICE, pointInput.toIntOrNull() ?: 9)
+                    MODEL_POKER -> nativeScene.add(NativeModelKind.POKER_CARD)
+                }
+            }.onSuccess {
+                scope.launch { snackbarHostState.showSnackbar("原生 3D 模型已加入场景") }
+            }.onFailure { error ->
+                scope.launch { snackbarHostState.showSnackbar(error.message ?: "模型生成失败") }
+            }
         },
-        onModelTransformFinish = { runJs("window.Mobile3DStudio.endTransformBatch()") },
-        onDefaultModel = { runJs("window.Mobile3DStudio.resetSelected()") },
-        onUndo = { runJs("window.Mobile3DStudio.undo()") },
+        onModelTransformChange = { axis, value -> nativeScene.updateTransform(axis, value) },
+        onModelTransformFinish = { nativeScene.finishTransformEdit() },
+        onDefaultModel = { nativeScene.resetSelected() },
+        onUndo = {
+            if (!nativeScene.undo()) scope.launch { snackbarHostState.showSnackbar("没有可撤销的操作") }
+        },
         onExportPng = {
-            if (!rendererReady) scope.launch { snackbarHostState.showSnackbar(rendererError ?: "3D 渲染器尚未就绪") }
-            else runEngineCommand("window.Mobile3DStudio.exportPng()", "PNG 图像已生成，正在选择保存位置…")
+            val bounds = previewBounds?.let { Rect(it) }
+            if (bounds == null || bounds.isEmpty) {
+                scope.launch { snackbarHostState.showSnackbar("预览画布尚未就绪，无法导出 PNG") }
+            } else {
+                scope.launch {
+                    runCatching { NativePngExporter.export(context, bounds) }
+                        .onSuccess { file ->
+                            pendingExportFile = file
+                            savePngLauncher.launch("Mobile3DStudio-Preview.png")
+                        }
+                        .onFailure { error -> snackbarHostState.showSnackbar("PNG 导出失败：${error.message ?: "未知错误"}") }
+                }
+            }
         },
         onExportGlb = {
-            if (!rendererReady) scope.launch { snackbarHostState.showSnackbar(rendererError ?: "3D 渲染器尚未就绪") }
-            else runEngineCommand("window.Mobile3DStudio.exportGlb()", "GLB 场景文件已生成，正在选择保存位置…")
+            scope.launch {
+                val bounds = previewBounds
+                val aspect = if (bounds != null && bounds.height() > 0) {
+                    bounds.width().toFloat() / bounds.height().toFloat()
+                } else 1f
+                runCatching {
+                    NativeGlbExporter.export(
+                        context = context,
+                        models = nativeModels,
+                        imageBitmap = imageBitmap,
+                        imageScale = flatScale,
+                        imageOffsetX = flatOffsetX,
+                        imageOffsetY = flatOffsetY,
+                        imageRotation = flatRotation,
+                        viewportAspectRatio = aspect
+                    )
+                }.onSuccess { file ->
+                    pendingExportFile = file
+                    saveGlbLauncher.launch("Mobile3DStudio-Scene.glb")
+                }.onFailure { error ->
+                    snackbarHostState.showSnackbar("GLB 导出失败：${error.message ?: "未知错误"}")
+                }
+            }
         }
     )
 }
