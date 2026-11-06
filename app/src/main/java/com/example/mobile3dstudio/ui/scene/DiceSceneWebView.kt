@@ -3,6 +3,9 @@ package com.example.mobile3dstudio.ui.scene
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -19,10 +22,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 fun DiceSceneWebView(
     modifier: Modifier = Modifier,
     onWebViewReady: (WebView) -> Unit,
-    onSceneState: (String) -> Unit
+    onSceneState: (String) -> Unit,
+    onCommandResult: (Boolean, String) -> Unit
 ) {
     val context = LocalContext.current
     val latestOnSceneState = rememberUpdatedState(onSceneState)
+    val latestOnCommandResult = rememberUpdatedState(onCommandResult)
     val latestOnWebViewReady = rememberUpdatedState(onWebViewReady)
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -31,6 +36,27 @@ fun DiceSceneWebView(
             @JavascriptInterface
             fun onSceneState(json: String) {
                 mainHandler.post { latestOnSceneState.value(json) }
+            }
+
+            @JavascriptInterface
+            fun onCommandResult(success: Boolean, message: String) {
+                mainHandler.post { latestOnCommandResult.value(success, message) }
+            }
+
+            @JavascriptInterface
+            fun getCardTextureDataUrl(fileName: String): String {
+                val safeName = when (fileName) {
+                    "queen-spades-front.jpg" -> fileName
+                    "playing-card-back.jpg" -> fileName
+                    else -> return ""
+                }
+                return try {
+                    val bytes = context.assets.open("dice/$safeName").use { it.readBytes() }
+                    "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                } catch (error: Exception) {
+                    Log.e("Mobile3DStudio", "Unable to read card texture $safeName", error)
+                    ""
+                }
             }
         }
     }
@@ -51,16 +77,35 @@ fun DiceSceneWebView(
                 settings.displayZoomControls = false
                 settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
                 addJavascriptInterface(bridge, "AndroidBridge")
-                webChromeClient = WebChromeClient()
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                        if (consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                            Log.e("Mobile3DStudio-WebGL", "${consoleMessage.message()} @ ${consoleMessage.lineNumber()}")
+                        }
+                        return true
+                    }
+                }
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         super.onPageFinished(view, url)
-                        // Ask the page to publish its real scene state; do not overwrite it
-                        // with a fabricated empty state during the page-finished callback.
+                        // Publish the renderer's true state. A missing JS bridge is reported
+                        // explicitly instead of leaving the native Generate button inert.
                         view.evaluateJavascript(
-                            "if(window.Mobile3DStudio&&window.Mobile3DStudio.sync){window.Mobile3DStudio.sync();}",
+                            "(function(){if(window.Mobile3DStudio&&window.Mobile3DStudio.sync){window.Mobile3DStudio.sync();}else if(window.AndroidBridge){window.AndroidBridge.onCommandResult(false,'3D 引擎脚本未能完成初始化，请检查 WebView 控制台错误。');}})();",
                             null
                         )
+                    }
+
+                    override fun onReceivedError(
+                        view: WebView,
+                        request: android.webkit.WebResourceRequest,
+                        error: android.webkit.WebResourceError
+                    ) {
+                        super.onReceivedError(view, request, error)
+                        if (request.isForMainFrame) {
+                            val message = "3D 场景页面加载失败：${'$'}{error.description}"
+                            mainHandler.post { latestOnCommandResult.value(false, message) }
+                        }
                     }
                 }
                 setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
