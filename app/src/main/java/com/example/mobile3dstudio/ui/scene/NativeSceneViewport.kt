@@ -46,7 +46,8 @@ fun NativeSceneViewport(
     modifier: Modifier = Modifier,
     models: List<NativeSceneModel>,
     onModelSelected: (Long?) -> Unit,
-    onRendererFrame: () -> Unit = {}
+    onRendererFrame: () -> Unit = {},
+    onRendererError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val engine = rememberEngine()
@@ -57,6 +58,7 @@ fun NativeSceneViewport(
     )
     val latestOnModelSelected = rememberUpdatedState(onModelSelected)
     val latestOnRendererFrame = rememberUpdatedState(onRendererFrame)
+    val latestOnRendererError = rememberUpdatedState(onRendererError)
     val hasReportedFrame = remember { AtomicBoolean(false) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -146,8 +148,9 @@ fun NativeSceneViewport(
                                 withContext(Dispatchers.Default) {
                                     NativeMeshFactory.irregularDice(model.pointCount, model.seed)
                                 }
-                            }.onFailure {
-                                android.util.Log.e("Mobile3DStudio", "Native irregular die mesh generation failed", it)
+                            }.onFailure { error ->
+                                android.util.Log.e("Mobile3DStudio", "Native irregular die mesh generation failed", error)
+                                mainHandler.post { latestOnRendererError.value(error.message ?: "不规则骰子网格生成失败") }
                             }.getOrNull()
                         }.value
                         mesh?.let { generated ->
@@ -162,8 +165,9 @@ fun NativeSceneViewport(
                                 withContext(Dispatchers.Default) {
                                     NativeMeshFactory.doubleCutDice(model.pointCount, model.seed)
                                 }
-                            }.onFailure {
-                                android.util.Log.e("Mobile3DStudio", "Native double-cut die mesh generation failed", it)
+                            }.onFailure { error ->
+                                android.util.Log.e("Mobile3DStudio", "Native double-cut die mesh generation failed", error)
+                                mainHandler.post { latestOnRendererError.value(error.message ?: "双切面骰子网格生成失败") }
                             }.getOrNull()
                         }.value
                         mesh?.let { generated ->
