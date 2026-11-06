@@ -11,17 +11,17 @@ import android.os.Handler
 import android.os.Looper
 import android.view.PixelCopy
 import android.view.Window
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Captures only the editor preview region, including the native transparent 3D surface. */
+/** Captures only the preview rectangle, excluding the editor controls outside that area. */
 internal object NativePngExporter {
     suspend fun export(context: Context, previewBoundsInWindow: Rect): File {
         require(!previewBoundsInWindow.isEmpty) { "预览画布尚未完成布局，暂时无法导出 PNG。" }
@@ -30,17 +30,14 @@ internal object NativePngExporter {
         val decor = window.decorView
         val width = decor.width.takeIf { it > 0 } ?: throw IOException("预览窗口宽度无效。")
         val height = decor.height.takeIf { it > 0 } ?: throw IOException("预览窗口高度无效。")
+        val crop = Rect(previewBoundsInWindow).apply { intersect(0, 0, width, height) }
+        if (crop.isEmpty) throw IOException("预览画布区域超出窗口范围，无法导出 PNG。")
 
-        val windowBitmap = captureWindow(window, decor, width, height)
-        val crop = Rect(previewBoundsInWindow).apply {
-            intersect(0, 0, windowBitmap.width, windowBitmap.height)
+        val preview = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            capturePreview(window, crop)
+        } else {
+            capturePreviewFallback(decor, crop, width, height)
         }
-        if (crop.width() <= 0 || crop.height() <= 0) {
-            windowBitmap.recycle()
-            throw IOException("预览画布区域超出窗口范围，无法导出 PNG。")
-        }
-        val preview = Bitmap.createBitmap(windowBitmap, crop.left, crop.top, crop.width(), crop.height())
-        windowBitmap.recycle()
 
         return withContext(Dispatchers.IO) {
             val directory = File(context.cacheDir, "exports")
@@ -66,16 +63,12 @@ internal object NativePngExporter {
         }
     }
 
-    private suspend fun captureWindow(
-        window: Window,
-        decor: android.view.View,
-        width: Int,
-        height: Int
-    ): Bitmap = suspendCancellableCoroutine { continuation ->
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    private suspend fun capturePreview(window: Window, sourceRect: Rect): Bitmap =
+        suspendCancellableCoroutine { continuation ->
+            val bitmap = Bitmap.createBitmap(sourceRect.width(), sourceRect.height(), Bitmap.Config.ARGB_8888)
             PixelCopy.request(
                 window,
+                Rect(sourceRect),
                 bitmap,
                 { result ->
                     if (!continuation.isActive) {
@@ -85,30 +78,41 @@ internal object NativePngExporter {
                     } else {
                         bitmap.recycle()
                         continuation.resumeWithException(
-                            IOException("窗口像素复制失败，PixelCopy 错误码：$result。请确认预览画布已显示后重试。")
+                            IOException("预览画布像素复制失败，PixelCopy 错误码：$result。请确认画布已显示后重试。")
                         )
                     }
                 },
                 Handler(Looper.getMainLooper())
             )
-        } else {
-            // API 24–25 fallback. Texture surfaces may not be included by View.draw on all devices.
-            decor.post {
-                if (!continuation.isActive) {
-                    bitmap.recycle()
-                } else {
-                    runCatching { decor.draw(Canvas(bitmap)) }
-                        .onSuccess { continuation.resume(bitmap) }
-                        .onFailure { error ->
-                            bitmap.recycle()
-                            continuation.resumeWithException(IOException("截图失败：${error.message}", error))
-                        }
+            continuation.invokeOnCancellation {
+                // PixelCopy retains the destination until its completion callback.
+            }
+        }
+
+    private suspend fun capturePreviewFallback(
+        decor: android.view.View,
+        crop: Rect,
+        width: Int,
+        height: Int
+    ): Bitmap = suspendCancellableCoroutine { continuation ->
+        val full = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        decor.post {
+            if (!continuation.isActive) {
+                full.recycle()
+            } else {
+                runCatching {
+                    decor.draw(Canvas(full))
+                    Bitmap.createBitmap(full, crop.left, crop.top, crop.width(), crop.height())
+                }.onSuccess { preview ->
+                    full.recycle()
+                    continuation.resume(preview)
+                }.onFailure { error ->
+                    full.recycle()
+                    continuation.resumeWithException(IOException("预览截图失败：${error.message}", error))
                 }
             }
         }
-        continuation.invokeOnCancellation {
-            // PixelCopy owns the destination until its callback; it is recycled there.
-        }
+        continuation.invokeOnCancellation { }
     }
 
     private tailrec fun Context.findActivity(): Activity? = when (this) {
