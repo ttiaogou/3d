@@ -52,8 +52,9 @@ internal object NativeMeshFactory {
     private const val HALF = 0.62f
     private const val ROUND_RADIUS = 0.17f
     private const val GRID = 32
-    private const val PIP_RADIUS = 0.175f
     private const val PIP_DEPTH = 0.095f
+    private const val MIN_CUT_NORMAL_DOT = 0.92f
+    private const val MIN_VISIBLE_CUT_AREA = 0.02f
 
     private val layouts = mapOf(
         1 to listOf(0f to 0f),
@@ -75,43 +76,67 @@ internal object NativeMeshFactory {
     }
 
     /**
-     * Two sequential non-parallel plane cuts. Each cut is closed with a triangulated cap.
-     * Offsets are solved against the mesh's signed tetrahedron volume, not guessed from area.
+     * Creates two sequential, independent plane cuts. Both cuts are closed with real cap meshes.
+     * The second clipping pass also clips the first cap, so the first cut face remains correctly
+     * sealed where the two planes intersect. The +Z pip face is kept wholly inside both cuts.
      */
     fun doubleCutDice(pointCount: Int, seed: Int): DiceMeshSet {
         require(pointCount in 0..9)
-        val base = buildDiceSurface(pointCount, seed)
+        val base = buildDiceSurface(
+            pointCount = pointCount,
+            seed = seed,
+            singlePipFace = true,
+            sizePipsByCount = true
+        )
         val originalVolume = volume(base.body)
         require(originalVolume > 1e-6f) { "骰子初始网格体积无效" }
 
         val random = SeededRandom(seed xor 0x51ED270B)
-        val totalRemoval = random.between(.30f, .90f)
-        val firstShare = random.between(.38f, .62f)
+        // A small safety margin keeps numerical volume error inside the requested 35%-90% band.
+        val totalRemoval = random.between(.3505f, .8995f)
+        val firstShare = random.between(.55f, .72f)
         val firstTarget = 1f - totalRemoval * firstShare
         val finalTarget = 1f - totalRemoval
 
-        // Choose two genuinely different cut directions. The lower-facing normals and
-        // volume solver keep every sampled point on the +Z pip face on the retained side.
         var selectedFirst: VolumeCut? = null
         var selectedSecond: VolumeCut? = null
         var selectedPlaneA: V3? = null
         var selectedPlaneB: V3? = null
-        repeat(32) {
+
+        repeat(64) {
             if (selectedSecond != null) return@repeat
-            val firstAzimuth = random.between(0f, (2f * PI).toFloat())
-            val planeA = randomCutNormal(random, firstAzimuth, .90f, .975f)
+
+            // Both planes are sampled independently, including their azimuth and tilt angle.
+            // Their normals point down so the complete +Z point face remains on the retained side.
+            val planeA = randomCutNormal(random, .90f, .975f)
             val first = runCatching {
                 clipAtVolumeFraction(base.body, planeA, firstTarget, base.topFacePoints)
             }.getOrNull() ?: return@repeat
+
+            if (surfaceArea(first.cap) < MIN_VISIBLE_CUT_AREA) return@repeat
             val firstClosed = combine(first.mesh, first.cap)
             val remaining = (volume(firstClosed) / originalVolume).coerceIn(.001f, .999f)
-            val relativeFinal = (finalTarget / remaining).coerceIn(.02f, .999f)
+            val relativeFinal = finalTarget / remaining
+            if (!relativeFinal.isFinite() || relativeFinal <= 0f || relativeFinal >= 1f) return@repeat
 
-            val separation = random.between(1.2f, 2.1f) * if (random.unit() < .5f) -1f else 1f
-            val planeB = randomCutNormal(random, firstAzimuth + separation, .96f, .999f)
+            val planeB = randomCutNormal(random, .96f, .999f)
+            // Reject near-parallel directions. Since both normals face downward, dot > .92
+            // would mean the plane directions differ by less than about 23 degrees.
+            if (planeA.dot(planeB) > MIN_CUT_NORMAL_DOT) return@repeat
+
             val second = runCatching {
                 clipAtVolumeFraction(firstClosed, planeB, relativeFinal, base.topFacePoints)
             }.getOrNull() ?: return@repeat
+            if (surfaceArea(second.cap) < MIN_VISIBLE_CUT_AREA) return@repeat
+
+            // The second cut must leave a visible portion of the first cap; this is also the
+            // actual geometric operation that trims/seals the first cut at the intersection.
+            val firstCapAfterSecondCut = clipWithoutCap(first.cap, planeB, second.planeOffset)
+            if (surfaceArea(firstCapAfterSecondCut) < MIN_VISIBLE_CUT_AREA) return@repeat
+
+            val candidateBody = combine(second.mesh, second.cap)
+            val candidateRemoved = (1f - volume(candidateBody) / originalVolume) * 100f
+            if (!candidateRemoved.isFinite() || candidateRemoved !in 35f..90f) return@repeat
 
             selectedFirst = first
             selectedSecond = second
@@ -120,18 +145,17 @@ internal object NativeMeshFactory {
         }
 
         val first = requireNotNull(selectedFirst) {
-            "无法在保留完整点数面的条件下生成两个切面，请重新生成"
+            "无法在保留完整点数面的条件下生成两个有效切面，请重新生成"
         }
         val second = requireNotNull(selectedSecond) {
-            "无法在保留完整点数面的条件下求出第二个切面，请重新生成"
+            "无法生成满足35%-90%切除比例的第二个独立切面，请重新生成"
         }
         val planeA = requireNotNull(selectedPlaneA)
         val planeB = requireNotNull(selectedPlaneB)
+        require(planeA.dot(planeB) <= MIN_CUT_NORMAL_DOT) { "两个切割平面方向过于接近，请重新生成" }
 
-        // The second clipping pass already carries the surviving portion of the first cap in
-        // second.mesh. Add only the second cap here; adding firstCapVisible again would
-        // duplicate coincident triangles and corrupt the measured volume. Both caps remain
-        // in the closed body, while capOverlay gives them a distinct surface finish.
+        // second.mesh already contains the visible, clipped part of the first cap.
+        // Add the first cap only to the overlay; the solid body receives only the second cap here.
         val firstCapVisible = clipWithoutCap(first.cap, planeB, second.planeOffset)
         val closedBody = combine(second.mesh, second.cap)
         val capOverlay = combine(
@@ -140,6 +164,7 @@ internal object NativeMeshFactory {
         )
         val finalVolume = volume(closedBody)
         val actualRemoved = (1f - finalVolume / originalVolume).coerceIn(0f, 1f) * 100f
+        require(actualRemoved in 35f..90f) { "实际切除比例超出35%-90%范围，请重新生成" }
 
         val clippedPipsA = clipWithoutCap(base.pips, planeA, first.planeOffset)
         val clippedPipsB = clipWithoutCap(clippedPipsA, planeB, second.planeOffset)
@@ -191,15 +216,20 @@ internal object NativeMeshFactory {
         return NativeMeshData(vertices, indices)
     }
 
-    private fun buildDiceSurface(pointCount: Int, seed: Int): DiceBaseSurface {
+    private fun buildDiceSurface(
+        pointCount: Int,
+        seed: Int,
+        singlePipFace: Boolean = false,
+        sizePipsByCount: Boolean = false
+    ): DiceBaseSurface {
         val opposite = if (pointCount in 1..6) 7 - pointCount else 6
         val faces = listOf(
             Face(V3(0f, 0f, 1f), V3(1f, 0f, 0f), V3(0f, 1f, 0f), pointCount),
-            Face(V3(0f, 0f, -1f), V3(-1f, 0f, 0f), V3(0f, 1f, 0f), opposite),
-            Face(V3(1f, 0f, 0f), V3(0f, 1f, 0f), V3(0f, 0f, 1f), 3),
-            Face(V3(-1f, 0f, 0f), V3(0f, -1f, 0f), V3(0f, 0f, 1f), 4),
-            Face(V3(0f, 1f, 0f), V3(-1f, 0f, 0f), V3(0f, 0f, 1f), 2),
-            Face(V3(0f, -1f, 0f), V3(1f, 0f, 0f), V3(0f, 0f, 1f), 5)
+            Face(V3(0f, 0f, -1f), V3(-1f, 0f, 0f), V3(0f, 1f, 0f), if (singlePipFace) 0 else opposite),
+            Face(V3(1f, 0f, 0f), V3(0f, 1f, 0f), V3(0f, 0f, 1f), if (singlePipFace) 0 else 3),
+            Face(V3(-1f, 0f, 0f), V3(0f, -1f, 0f), V3(0f, 0f, 1f), if (singlePipFace) 0 else 4),
+            Face(V3(0f, 1f, 0f), V3(-1f, 0f, 0f), V3(0f, 0f, 1f), if (singlePipFace) 0 else 2),
+            Face(V3(0f, -1f, 0f), V3(1f, 0f, 0f), V3(0f, 0f, 1f), if (singlePipFace) 0 else 5)
         )
         val body = MeshWriter()
         val pips = MeshWriter()
@@ -208,6 +238,7 @@ internal object NativeMeshFactory {
 
         for (face in faces) {
             val centers = layouts[face.value].orEmpty()
+            val pipRadius = pipRadiusFor(face.value, sizePipsByCount)
             val count = GRID + 1
             val points = Array(count * count) { V3(0f, 0f, 0f) }
             val normals = Array(count * count) { face.n }
@@ -217,7 +248,7 @@ internal object NativeMeshFactory {
             for (y in 0..GRID) for (x in 0..GRID) {
                 val u = coord(x)
                 val v = coord(y)
-                points[idx(x, y)] = dicePoint(face, u, v, centers, noiseSeed)
+                points[idx(x, y)] = dicePoint(face, u, v, centers, noiseSeed, pipRadius)
                 if (face.n.z > .99f) topFacePoints += points[idx(x, y)]
             }
             for (y in 0..GRID) for (x in 0..GRID) {
@@ -237,8 +268,7 @@ internal object NativeMeshFactory {
                 val v1 = coord(y + 1)
                 val centerU = (u0 + u1) * .5f
                 val centerV = (v0 + v1) * .5f
-                val pipRadius = if (face.value >= 7) .155f else PIP_RADIUS
-                val isWell = centers.any { (px, py) ->
+                val isWell = pipRadius > 0f && centers.any { (px, py) ->
                     val dx = centerU - px
                     val dy = centerV - py
                     dx * dx + dy * dy < (pipRadius * .74f) * (pipRadius * .74f)
@@ -264,7 +294,32 @@ internal object NativeMeshFactory {
         return DiceBaseSurface(body.build(), pips.build(), topFacePoints)
     }
 
-    private fun dicePoint(face: Face, u: Float, v: Float, centers: List<Pair<Float, Float>>, noiseSeed: Float): V3 {
+    private fun pipRadiusFor(pointCount: Int, sizeByCount: Boolean): Float {
+        if (pointCount !in 1..9) return 0f
+        if (!sizeByCount) return if (pointCount >= 7) .155f else .175f
+        // Fewer points get visibly larger bowls; the nine-point pattern keeps enough material
+        // between neighboring wells so the concave shapes remain separate.
+        return when (pointCount) {
+            1 -> .245f
+            2 -> .215f
+            3 -> .195f
+            4 -> .180f
+            5 -> .165f
+            6 -> .155f
+            7 -> .148f
+            8 -> .141f
+            else -> .135f
+        }
+    }
+
+    private fun dicePoint(
+        face: Face,
+        u: Float,
+        v: Float,
+        centers: List<Pair<Float, Float>>,
+        noiseSeed: Float,
+        pipRadius: Float
+    ): V3 {
         val raw = face.n + face.u * u + face.v * v
         val core = V3(
             raw.x.coerceIn(-1f + ROUND_RADIUS, 1f - ROUND_RADIUS),
@@ -279,8 +334,7 @@ internal object NativeMeshFactory {
             val dy = v - py
             sqrt(dx * dx + dy * dy)
         } ?: Float.POSITIVE_INFINITY
-        val pipRadius = if (centers.size >= 7) .155f else PIP_RADIUS
-        if (nearest < pipRadius) {
+        if (pipRadius > 0f && nearest < pipRadius) {
             val t = (nearest / pipRadius).coerceIn(0f, 1f)
             val profile = (1f - t * t).coerceAtLeast(0f).let { it * it }
             val rim = .007f * kotlin.math.exp(-(((t - .94f) / .06f) * ((t - .94f) / .06f)))
@@ -295,10 +349,10 @@ internal object NativeMeshFactory {
         return point * HALF
     }
 
-    private fun randomCutNormal(random: SeededRandom, azimuth: Float, minAbsZ: Float, maxAbsZ: Float): V3 {
-        // Downward-facing normals preserve the complete upper pip face. The first plane
-        // is intentionally more tilted; the second can approach a horizontal cut when
-        // a high removal target requires keeping only a thin upper portion.
+    private fun randomCutNormal(random: SeededRandom, minAbsZ: Float, maxAbsZ: Float): V3 {
+        // Sampling the azimuth inside this function makes the second plane independent of the
+        // first plane's direction; the random |Z| component independently controls its tilt.
+        val azimuth = random.between(0f, (2f * PI).toFloat())
         val z = -random.between(minAbsZ, maxAbsZ)
         return V3(
             cos(azimuth) * sqrt(1f - z * z),
@@ -323,11 +377,11 @@ internal object NativeMeshFactory {
         val sourceVolume = max(volume(mesh), 1e-8f)
         val minimumCut = clipMesh(mesh, normal, low, buildCap = true)
         val minimumRetained = volume(combine(minimumCut.mesh, minimumCut.cap)) / sourceVolume
-        require(minimumRetained <= target + .006f) {
+        require(minimumRetained <= target + .0015f) {
             "当前切割方向无法在保留完整点数面的同时达到目标体积"
         }
 
-        repeat(18) {
+        repeat(20) {
             val mid = (low + high) * .5f
             val clipped = clipMesh(mesh, normal, mid, buildCap = true)
             val fraction = (volume(combine(clipped.mesh, clipped.cap)) / sourceVolume).coerceIn(0f, 1f)
@@ -434,6 +488,17 @@ internal object NativeMeshFactory {
             sixVolume += a.dot(b.cross(c))
         }
         return kotlin.math.abs(sixVolume) / 6f
+    }
+
+    private fun surfaceArea(mesh: NativeMeshData): Float {
+        var area = 0f
+        for (i in mesh.indices.indices step 3) {
+            val a = point(mesh, mesh.indices[i])
+            val b = point(mesh, mesh.indices[i + 1])
+            val c = point(mesh, mesh.indices[i + 2])
+            area += (b - a).cross(c - a).length() * .5f
+        }
+        return area
     }
 
     private fun point(mesh: NativeMeshData, index: Int): V3 {
