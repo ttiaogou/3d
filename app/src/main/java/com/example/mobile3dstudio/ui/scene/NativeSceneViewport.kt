@@ -35,11 +35,13 @@ import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
 import io.github.sceneview.gesture.ScaleGestureDetector
 import io.github.sceneview.math.Position
+import io.github.sceneview.node.CameraNode
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.Size
 import io.github.sceneview.node.Node as SceneNode
 import io.github.sceneview.rememberCameraManipulator
+import io.github.sceneview.rememberCameraNode
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelInstance
@@ -66,6 +68,15 @@ private class ViewportTouchState {
     var pressDownY = 0f
     var lastX = 0f
     var lastY = 0f
+    var modelDragPlaneX = 0f
+    var modelDragPlaneY = 0f
+    var modelDragPlaneZ = 0f
+    var modelDragPlaneNormalX = 0f
+    var modelDragPlaneNormalY = 0f
+    var modelDragPlaneNormalZ = 1f
+    var modelDragLastWorldX = Float.NaN
+    var modelDragLastWorldY = Float.NaN
+    var modelDragLastWorldZ = Float.NaN
     var backgroundLastCentroidX = 0f
     var backgroundLastCentroidY = 0f
     var backgroundLastSpan = 0f
@@ -97,6 +108,7 @@ fun NativeSceneViewport(
     val engine = rememberEngine()
     val materialLoader = rememberMaterialLoader(engine)
     val modelLoader = rememberModelLoader(engine, context)
+    val cameraNode = rememberCameraNode(engine)
     val cameraManipulator = rememberCameraManipulator(
         orbitHomePosition = Position(2.55f, 2.05f, 3.25f),
         targetPosition = Position(0f, 0f, 0f)
@@ -194,6 +206,7 @@ fun NativeSceneViewport(
             viewportHeight = size.height.toFloat()
         },
         engine = engine,
+        cameraNode = cameraNode,
         modelLoader = modelLoader,
         materialLoader = materialLoader,
         surfaceType = SurfaceType.TextureSurface,
@@ -217,6 +230,9 @@ fun NativeSceneViewport(
                     touchState.pressDownY = event.y
                     touchState.lastX = event.x
                     touchState.lastY = event.y
+                    touchState.modelDragLastWorldX = Float.NaN
+                    touchState.modelDragLastWorldY = Float.NaN
+                    touchState.modelDragLastWorldZ = Float.NaN
                     touchState.didTransform = false
                     touchState.longPressTriggered = false
                     touchState.backgroundHasChanged = false
@@ -229,6 +245,30 @@ fun NativeSceneViewport(
                             ModelGestureMode.ROTATE
                         } else {
                             ModelGestureMode.MOVE
+                        }
+                        if (touchState.gestureMode == ModelGestureMode.MOVE && model != null) {
+                            val cameraPosition = cameraNode.worldPosition
+                            touchState.modelDragPlaneX = model.transform.x
+                            touchState.modelDragPlaneY = model.transform.y
+                            touchState.modelDragPlaneZ = model.transform.z
+                            touchState.modelDragPlaneNormalX = model.transform.x - cameraPosition.x
+                            touchState.modelDragPlaneNormalY = model.transform.y - cameraPosition.y
+                            touchState.modelDragPlaneNormalZ = model.transform.z - cameraPosition.z
+                            screenPointOnCameraFacingPlane(
+                                cameraNode,
+                                event.x,
+                                event.y,
+                                touchState.modelDragPlaneX,
+                                touchState.modelDragPlaneY,
+                                touchState.modelDragPlaneZ,
+                                touchState.modelDragPlaneNormalX,
+                                touchState.modelDragPlaneNormalY,
+                                touchState.modelDragPlaneNormalZ
+                            )?.let { point ->
+                                touchState.modelDragLastWorldX = point.first
+                                touchState.modelDragLastWorldY = point.second
+                                touchState.modelDragLastWorldZ = point.third
+                            }
                         }
                         latestOnModelSelected.value(id)
                         val task = Runnable {
@@ -252,6 +292,9 @@ fun NativeSceneViewport(
                         touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
                         touchState.activeModelId = null
                         touchState.gestureMode = ModelGestureMode.NONE
+                        touchState.modelDragLastWorldX = Float.NaN
+                        touchState.modelDragLastWorldY = Float.NaN
+                        touchState.modelDragLastWorldZ = Float.NaN
                         touchState.didTransform = false
                         false
                     } else if (touchState.activeTarget == ViewportTouchTarget.BACKGROUND) {
@@ -335,25 +378,57 @@ fun NativeSceneViewport(
                                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                                     touchState.pendingLongPress = null
                                     if (id != null && touchState.gestureMode != ModelGestureMode.NONE) {
-                                        val dx = if (touchState.didTransform) event.x - touchState.lastX else event.x - touchState.pressDownX
-                                        val dy = if (touchState.didTransform) event.y - touchState.lastY else event.y - touchState.pressDownY
-                                        if ((abs(dx) + abs(dy)) > 0.01f) {
-                                            val current = currentTransform(id)
-                                            if (current != null) {
-                                                val next = when (touchState.gestureMode) {
-                                                    ModelGestureMode.MOVE -> current.copy(
-                                                        x = current.x + dx / MODEL_DRAG_PIXELS_PER_UNIT,
-                                                        y = current.y - dy / MODEL_DRAG_PIXELS_PER_UNIT
+                                        val current = currentTransform(id)
+                                        if (current != null) {
+                                            val next = when (touchState.gestureMode) {
+                                                ModelGestureMode.MOVE -> {
+                                                    val worldPoint = screenPointOnCameraFacingPlane(
+                                                        cameraNode,
+                                                        event.x,
+                                                        event.y,
+                                                        touchState.modelDragPlaneX,
+                                                        touchState.modelDragPlaneY,
+                                                        touchState.modelDragPlaneZ,
+                                                        touchState.modelDragPlaneNormalX,
+                                                        touchState.modelDragPlaneNormalY,
+                                                        touchState.modelDragPlaneNormalZ
                                                     )
-                                                    ModelGestureMode.ROTATE -> current.copy(
-                                                        rx = current.rx + dy * EDGE_ROTATION_DEGREES_PER_PIXEL,
-                                                        ry = current.ry + dx * EDGE_ROTATION_DEGREES_PER_PIXEL
-                                                    )
-                                                    ModelGestureMode.NONE -> current
+                                                    if (worldPoint != null) {
+                                                        val previousX = touchState.modelDragLastWorldX
+                                                        val previousY = touchState.modelDragLastWorldY
+                                                        val previousZ = touchState.modelDragLastWorldZ
+                                                        touchState.modelDragLastWorldX = worldPoint.first
+                                                        touchState.modelDragLastWorldY = worldPoint.second
+                                                        touchState.modelDragLastWorldZ = worldPoint.third
+                                                        if (previousX.isFinite() && previousY.isFinite() && previousZ.isFinite()) {
+                                                            val worldDx = worldPoint.first - previousX
+                                                            val worldDy = worldPoint.second - previousY
+                                                            val worldDz = worldPoint.third - previousZ
+                                                            if (abs(worldDx) + abs(worldDy) + abs(worldDz) > 0.000001f) {
+                                                                touchState.didTransform = true
+                                                                current.copy(
+                                                                    x = current.x + worldDx,
+                                                                    y = current.y + worldDy,
+                                                                    z = current.z + worldDz
+                                                                )
+                                                            } else current
+                                                        } else current
+                                                    } else current
                                                 }
-                                                submitTransform(id, next)
-                                                touchState.didTransform = true
+                                                ModelGestureMode.ROTATE -> {
+                                                    val dx = if (touchState.didTransform) event.x - touchState.lastX else event.x - touchState.pressDownX
+                                                    val dy = if (touchState.didTransform) event.y - touchState.lastY else event.y - touchState.pressDownY
+                                                    if (abs(dx) + abs(dy) > 0.01f) {
+                                                        touchState.didTransform = true
+                                                        current.copy(
+                                                            rx = current.rx + dy * EDGE_ROTATION_DEGREES_PER_PIXEL,
+                                                            ry = current.ry + dx * EDGE_ROTATION_DEGREES_PER_PIXEL
+                                                        )
+                                                    } else current
+                                                }
+                                                ModelGestureMode.NONE -> current
                                             }
+                                            if (next != current) submitTransform(id, next)
                                         }
                                     }
                                 }
@@ -405,6 +480,9 @@ fun NativeSceneViewport(
                     touchState.activeModelId = null
                     touchState.activeTarget = ViewportTouchTarget.NONE
                     touchState.gestureMode = ModelGestureMode.NONE
+                    touchState.modelDragLastWorldX = Float.NaN
+                    touchState.modelDragLastWorldY = Float.NaN
+                    touchState.modelDragLastWorldZ = Float.NaN
                     touchState.didTransform = false
                     touchState.backgroundHasChanged = false
                     consumed
@@ -570,8 +648,38 @@ private fun SceneNode.configureManualModelGestures() {
 }
 
 private const val LONG_PRESS_TIMEOUT_MS = 1_500L
-private const val MODEL_DRAG_PIXELS_PER_UNIT = 95f
 private const val EDGE_ROTATION_DEGREES_PER_PIXEL = 0.45f
+
+@Suppress("DEPRECATION")
+private fun screenPointOnCameraFacingPlane(
+    cameraNode: CameraNode,
+    screenX: Float,
+    screenY: Float,
+    planeX: Float,
+    planeY: Float,
+    planeZ: Float,
+    normalX: Float,
+    normalY: Float,
+    normalZ: Float
+): Triple<Float, Float, Float>? = runCatching {
+    val ray = cameraNode.screenPointToRay(screenX, screenY)
+    val origin = ray.getOrigin()
+    val direction = ray.getDirection()
+    val denominator = direction.x * normalX + direction.y * normalY + direction.z * normalZ
+    if (abs(denominator) < 0.00001f) return null
+    val distance = (
+        (planeX - origin.x) * normalX +
+            (planeY - origin.y) * normalY +
+            (planeZ - origin.z) * normalZ
+        ) / denominator
+    if (!distance.isFinite() || distance < 0f) return null
+    Triple(
+        origin.x + direction.x * distance,
+        origin.y + direction.y * distance,
+        origin.z + direction.z * distance
+    )
+}.getOrNull()
+
 private const val MODEL_EDGE_THRESHOLD = 0.74f
 private const val CARD_EDGE_THRESHOLD = 0.78f
 
