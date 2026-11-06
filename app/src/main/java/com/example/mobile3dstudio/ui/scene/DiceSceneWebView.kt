@@ -182,7 +182,19 @@ fun DiceSceneWebView(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            WebView(ctx).apply {
+            object : WebView(ctx) {
+                override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                    super.onSizeChanged(w, h, oldw, oldh)
+                    if (w > 0 && h > 0) {
+                        post {
+                            evaluateJavascript(
+                                "window.Mobile3DStudio&&window.Mobile3DStudio.refreshViewport&&window.Mobile3DStudio.refreshViewport();",
+                                null
+                            )
+                        }
+                    }
+                }
+            }.apply {
                 // Transparency is essential: the native photo preview remains visible below WebGL.
                 setBackgroundColor(Color.TRANSPARENT)
                 settings.javaScriptEnabled = true
@@ -207,10 +219,12 @@ fun DiceSceneWebView(
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         super.onPageFinished(view, url)
-                        view.evaluateJavascript(
-                            "(function(){if(window.Mobile3DStudio&&window.Mobile3DStudio.sync){window.Mobile3DStudio.sync();}else if(window.AndroidBridge){window.AndroidBridge.onCommandResult(false,'3D 引擎脚本未能完成初始化，请检查 WebView 控制台错误。');}})();",
-                            null
-                        )
+                        view.post {
+                            view.evaluateJavascript(
+                                "(function(){var api=window.Mobile3DStudio;if(api&&api.refreshViewport){api.refreshViewport();api.sync();}else if(window.AndroidBridge){window.AndroidBridge.onCommandResult(false,'3D 引擎脚本未能完成初始化，请检查 WebView 控制台错误。');}})();",
+                                null
+                            )
+                        }
                     }
 
                     override fun onReceivedError(
@@ -225,7 +239,7 @@ fun DiceSceneWebView(
                         }
                     }
                 }
-                setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+                // Keep WebView on the window's normal hardware-accelerated composition path.
                 latestOnWebViewReady.value(this)
                 loadUrl("file:///android_asset/dice/index.html")
             }
