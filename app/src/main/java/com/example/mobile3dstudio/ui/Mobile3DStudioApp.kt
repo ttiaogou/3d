@@ -1,3 +1,4 @@
+import java.io.DataInputStream
 package com.example.mobile3dstudio.ui
 
 import android.content.Context
@@ -421,7 +422,7 @@ private fun copyGlbToPrivateStorage(context: Context, uri: Uri): File {
         if (destination.length() < 20L) throw IOException("GLB 文件内容不完整。")
         FileInputStream(destination).use { inputFile ->
             val header = ByteArray(12)
-            inputFile.readFully(header)
+            DataInputStream(inputFile).readFully(header)
             val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
             val magic = buffer.int
             val version = buffer.int
