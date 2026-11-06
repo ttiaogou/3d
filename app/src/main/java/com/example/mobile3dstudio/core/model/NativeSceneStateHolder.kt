@@ -1,5 +1,6 @@
 package com.example.mobile3dstudio.core.model
 
+import android.content.res.Resources
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -51,20 +52,24 @@ class NativeSceneStateHolder {
             else -> -0.95f
         }
         val row = -(index / 3) * 0.78f
+        val defaultScale = adaptiveDefaultScale(kind, sourceFilePath)
         val default = if (sourceFilePath != null) {
-            NativeTransform(x = column, y = row)
+            NativeTransform(x = column, y = row, scale = defaultScale)
         } else when (kind) {
             NativeModelKind.IRREGULAR_DICE -> NativeTransform(
                 x = column, y = row, rx = random.between(-24f, 24f),
-                ry = random.between(-32f, 32f), rz = random.between(-18f, 18f)
+                ry = random.between(-32f, 32f), rz = random.between(-18f, 18f),
+                scale = defaultScale
             )
             NativeModelKind.DOUBLE_CUT_DICE -> NativeTransform(
                 x = column, y = row, rx = random.between(-32f, -17f),
-                ry = random.between(-28f, 28f), rz = random.between(-180f, 180f)
+                ry = random.between(-28f, 28f), rz = random.between(-180f, 180f),
+                scale = defaultScale
             )
             NativeModelKind.POKER_CARD -> NativeTransform(
                 x = column, y = row, rx = random.between(-10f, 10f),
-                ry = random.between(-22f, 22f), rz = random.between(-12f, 12f)
+                ry = random.between(-22f, 22f), rz = random.between(-12f, 12f),
+                scale = defaultScale
             )
         }
         val model = NativeSceneModel(
@@ -80,6 +85,27 @@ class NativeSceneStateHolder {
         selectedModelId = id
         transformEditOpen = false
         return model
+    }
+
+    /**
+     * Keeps newly-created models at a phone-friendly size. The editor viewport occupies about
+     * 62.5% of the available app height; using its estimated aspect ratio avoids desktop-sized
+     * defaults on narrow Android screens while allowing a modest increase on wider layouts.
+     */
+    private fun adaptiveDefaultScale(kind: NativeModelKind, sourceFilePath: String?): Float {
+        val metrics = Resources.getSystem().displayMetrics
+        val editHeight = metrics.heightPixels * EDITOR_AREA_HEIGHT_FRACTION
+        val editorAspect = if (editHeight > 0f) metrics.widthPixels / editHeight else REFERENCE_EDITOR_ASPECT
+        val fittedAspect = minOf(editorAspect, 1f)
+        val aspectFactor = kotlin.math.sqrt(
+            (fittedAspect / REFERENCE_EDITOR_ASPECT).coerceIn(MIN_ASPECT_FACTOR, MAX_ASPECT_FACTOR)
+        )
+        val baseScale = when {
+            sourceFilePath != null -> IMPORTED_MODEL_BASE_SCALE
+            kind == NativeModelKind.POKER_CARD -> POKER_BASE_SCALE
+            else -> DICE_BASE_SCALE
+        }
+        return (baseScale * aspectFactor).coerceIn(MIN_DEFAULT_SCALE, MAX_DEFAULT_SCALE)
     }
 
     fun select(id: Long?) {
@@ -211,5 +237,14 @@ class NativeSceneStateHolder {
 
     private companion object {
         const val MAX_UNDO_STEPS = 40
+        const val EDITOR_AREA_HEIGHT_FRACTION = 0.625f
+        const val REFERENCE_EDITOR_ASPECT = 0.74f
+        const val MIN_ASPECT_FACTOR = 0.75f
+        const val MAX_ASPECT_FACTOR = 1.35f
+        const val DICE_BASE_SCALE = 0.46f
+        const val POKER_BASE_SCALE = 0.52f
+        const val IMPORTED_MODEL_BASE_SCALE = 0.48f
+        const val MIN_DEFAULT_SCALE = 0.34f
+        const val MAX_DEFAULT_SCALE = 0.62f
     }
 }
