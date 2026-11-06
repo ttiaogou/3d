@@ -10,10 +10,14 @@ import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.example.mobile3dstudio.core.model.NativeModelKind
@@ -46,18 +50,27 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 private enum class ModelGestureMode { NONE, MOVE, ROTATE }
+private enum class ViewportTouchTarget { NONE, MODEL, BACKGROUND }
 
 private class ViewportTouchState {
     var activeModelId: Long? = null
+    var activeTarget = ViewportTouchTarget.NONE
     var gestureMode = ModelGestureMode.NONE
     var pressDownX = 0f
     var pressDownY = 0f
     var lastX = 0f
     var lastY = 0f
+    var backgroundLastCentroidX = 0f
+    var backgroundLastCentroidY = 0f
+    var backgroundLastSpan = 0f
+    var backgroundLastAngle = 0f
+    var backgroundHasChanged = false
     var didTransform = false
     var longPressTriggered = false
     var pendingLongPress: Runnable? = null
@@ -74,6 +87,9 @@ fun NativeSceneViewport(
     onLongPressModel: (Long) -> Unit,
     onModelTransform: (Long, NativeTransform) -> Unit,
     onModelTransformFinished: () -> Unit,
+    backgroundEnabled: Boolean = false,
+    onBackgroundGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit = { _, _, _, _, _, _, _, _ -> },
+    onBackgroundGestureFinished: () -> Unit = {},
     onRendererFrame: () -> Unit = {},
     onRendererError: (String) -> Unit = {}
 ) {
@@ -89,6 +105,8 @@ fun NativeSceneViewport(
     val latestOnLongPress = rememberUpdatedState(onLongPressModel)
     val latestOnTransform = rememberUpdatedState(onModelTransform)
     val latestOnTransformFinished = rememberUpdatedState(onModelTransformFinished)
+    val latestOnBackgroundGesture = rememberUpdatedState(onBackgroundGesture)
+    val latestOnBackgroundGestureFinished = rememberUpdatedState(onBackgroundGestureFinished)
     val latestOnRendererFrame = rememberUpdatedState(onRendererFrame)
     val latestOnRendererError = rememberUpdatedState(onRendererError)
     val latestSelectedModelId = rememberUpdatedState(selectedModelId)
@@ -126,6 +144,8 @@ fun NativeSceneViewport(
     }.value
 
     val touchState = remember { ViewportTouchState() }
+    var viewportWidth by remember { mutableStateOf(0f) }
+    var viewportHeight by remember { mutableStateOf(0f) }
     fun modelId(node: SceneNode?): Long? =
         generateSequence(node) { it.parent }.firstNotNullOfOrNull { it.name?.toLongOrNull() }
     fun currentTransform(id: Long): NativeTransform? =
@@ -159,7 +179,7 @@ fun NativeSceneViewport(
             override fun onScale(detector: ScaleGestureDetector, e: MotionEvent, node: SceneNode?) {
                 val id = latestSelectedModelId.value ?: modelId(node) ?: return
                 val current = currentTransform(id) ?: return
-                submitTransform(id, current.copy(scale = (current.scale * detector.scaleFactor).coerceIn(0.05f, 10f)))
+                submitTransform(id, current.copy(scale = (current.scale * detector.scaleFactor).coerceIn(0.05f, 80f)))
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector, e: MotionEvent, node: SceneNode?) {
@@ -169,7 +189,10 @@ fun NativeSceneViewport(
     }
 
     SceneView(
-        modifier = modifier,
+        modifier = modifier.onSizeChanged { size ->
+            viewportWidth = size.width.toFloat()
+            viewportHeight = size.height.toFloat()
+        },
         engine = engine,
         modelLoader = modelLoader,
         materialLoader = materialLoader,
@@ -179,17 +202,24 @@ fun NativeSceneViewport(
         cameraManipulator = if (selectedModelId == null) cameraManipulator else null,
         onGestureListener = gestureListener,
         onTouchEvent = { event, hitResult: HitResult? ->
+            val hitModelId = modelId(hitResult?.node)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                     touchState.pendingLongPress = null
-                    touchState.activeModelId = modelId(hitResult?.node)
+                    touchState.activeModelId = hitModelId
+                    touchState.activeTarget = when {
+                        hitModelId != null -> ViewportTouchTarget.MODEL
+                        backgroundEnabled -> ViewportTouchTarget.BACKGROUND
+                        else -> ViewportTouchTarget.NONE
+                    }
                     touchState.pressDownX = event.x
                     touchState.pressDownY = event.y
                     touchState.lastX = event.x
                     touchState.lastY = event.y
                     touchState.didTransform = false
                     touchState.longPressTriggered = false
+                    touchState.backgroundHasChanged = false
 
                     val id = touchState.activeModelId
                     if (id != null) {
@@ -212,62 +242,176 @@ fun NativeSceneViewport(
                     } else {
                         touchState.gestureMode = ModelGestureMode.NONE
                     }
+                    touchState.activeTarget == ViewportTouchTarget.BACKGROUND
                 }
+
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                     touchState.pendingLongPress = null
-                    touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
-                    touchState.activeModelId = null
-                    touchState.gestureMode = ModelGestureMode.NONE
-                    touchState.didTransform = false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (event.pointerCount == 1 && !touchState.longPressTriggered) {
-                        val id = touchState.activeModelId
-                        val dx = event.x - touchState.lastX
-                        val dy = event.y - touchState.lastY
-                        val crossedTouchSlop =
-                            abs(event.x - touchState.pressDownX) > touchSlop ||
-                            abs(event.y - touchState.pressDownY) > touchSlop
-
-                        if (crossedTouchSlop) {
-                            touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
-                            touchState.pendingLongPress = null
-                            if (id != null && touchState.gestureMode != ModelGestureMode.NONE &&
-                                (abs(dx) + abs(dy)) > 0.01f
-                            ) {
-                                val current = currentTransform(id)
-                                if (current != null) {
-                                    val next = when (touchState.gestureMode) {
-                                        ModelGestureMode.MOVE -> current.copy(
-                                            x = current.x + dx / MODEL_DRAG_PIXELS_PER_UNIT,
-                                            y = current.y - dy / MODEL_DRAG_PIXELS_PER_UNIT
-                                        )
-                                        ModelGestureMode.ROTATE -> current.copy(
-                                            rx = current.rx + dy * EDGE_ROTATION_DEGREES_PER_PIXEL,
-                                            ry = current.ry + dx * EDGE_ROTATION_DEGREES_PER_PIXEL
-                                        )
-                                        ModelGestureMode.NONE -> current
-                                    }
-                                    submitTransform(id, next)
-                                    touchState.didTransform = true
-                                }
-                            }
+                    if (touchState.activeTarget == ViewportTouchTarget.MODEL) {
+                        touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
+                        touchState.activeModelId = null
+                        touchState.gestureMode = ModelGestureMode.NONE
+                        touchState.didTransform = false
+                        false
+                    } else if (touchState.activeTarget == ViewportTouchTarget.BACKGROUND) {
+                        if (event.pointerCount >= 2) {
+                            val x0 = event.getX(0)
+                            val y0 = event.getY(0)
+                            val x1 = event.getX(1)
+                            val y1 = event.getY(1)
+                            touchState.backgroundLastCentroidX = (x0 + x1) * 0.5f
+                            touchState.backgroundLastCentroidY = (y0 + y1) * 0.5f
+                            val dx = x1 - x0
+                            val dy = y1 - y0
+                            touchState.backgroundLastSpan = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+                            touchState.backgroundLastAngle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
                         }
-                        touchState.lastX = event.x
-                        touchState.lastY = event.y
+                        true
+                    } else {
+                        false
                     }
                 }
+
+                MotionEvent.ACTION_MOVE -> {
+                    when (touchState.activeTarget) {
+                        ViewportTouchTarget.BACKGROUND -> {
+                            if (event.pointerCount >= 2) {
+                                val x0 = event.getX(0)
+                                val y0 = event.getY(0)
+                                val x1 = event.getX(1)
+                                val y1 = event.getY(1)
+                                val centroidX = (x0 + x1) * 0.5f
+                                val centroidY = (y0 + y1) * 0.5f
+                                val dx = x1 - x0
+                                val dy = y1 - y0
+                                val span = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+                                val angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                                if (touchState.backgroundLastSpan > 0f) {
+                                    val panX = centroidX - touchState.backgroundLastCentroidX
+                                    val panY = centroidY - touchState.backgroundLastCentroidY
+                                    val zoom = (span / touchState.backgroundLastSpan).coerceIn(0.5f, 2f)
+                                    val rotation = normalizeGestureDegrees(angle - touchState.backgroundLastAngle)
+                                    if (abs(panX) + abs(panY) > 0.01f || abs(zoom - 1f) > 0.0001f || abs(rotation) > 0.01f) {
+                                        latestOnBackgroundGesture.value(
+                                            centroidX, centroidY, panX, panY, zoom, rotation,
+                                            viewportWidth.coerceAtLeast(1f), viewportHeight.coerceAtLeast(1f)
+                                        )
+                                        touchState.backgroundHasChanged = true
+                                    }
+                                }
+                                touchState.backgroundLastCentroidX = centroidX
+                                touchState.backgroundLastCentroidY = centroidY
+                                touchState.backgroundLastSpan = span
+                                touchState.backgroundLastAngle = angle
+                            } else if (event.pointerCount == 1) {
+                                val dx = if (touchState.backgroundHasChanged) event.x - touchState.lastX else event.x - touchState.pressDownX
+                                val dy = if (touchState.backgroundHasChanged) event.y - touchState.lastY else event.y - touchState.pressDownY
+                                val crossedTouchSlop =
+                                    abs(event.x - touchState.pressDownX) > touchSlop ||
+                                    abs(event.y - touchState.pressDownY) > touchSlop
+                                if (crossedTouchSlop && (abs(dx) + abs(dy)) > 0.01f) {
+                                    touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
+                                    touchState.pendingLongPress = null
+                                    latestOnBackgroundGesture.value(
+                                        event.x, event.y, dx, dy, 1f, 0f,
+                                        viewportWidth.coerceAtLeast(1f), viewportHeight.coerceAtLeast(1f)
+                                    )
+                                    touchState.backgroundHasChanged = true
+                                }
+                                touchState.lastX = event.x
+                                touchState.lastY = event.y
+                            }
+                            true
+                        }
+
+                        ViewportTouchTarget.MODEL -> {
+                            if (event.pointerCount == 1 && !touchState.longPressTriggered) {
+                                val id = touchState.activeModelId
+                                val crossedTouchSlop =
+                                    abs(event.x - touchState.pressDownX) > touchSlop ||
+                                    abs(event.y - touchState.pressDownY) > touchSlop
+                                if (crossedTouchSlop) {
+                                    touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
+                                    touchState.pendingLongPress = null
+                                    if (id != null && touchState.gestureMode != ModelGestureMode.NONE) {
+                                        val dx = if (touchState.didTransform) event.x - touchState.lastX else event.x - touchState.pressDownX
+                                        val dy = if (touchState.didTransform) event.y - touchState.lastY else event.y - touchState.pressDownY
+                                        if ((abs(dx) + abs(dy)) > 0.01f) {
+                                            val current = currentTransform(id)
+                                            if (current != null) {
+                                                val next = when (touchState.gestureMode) {
+                                                    ModelGestureMode.MOVE -> current.copy(
+                                                        x = current.x + dx / MODEL_DRAG_PIXELS_PER_UNIT,
+                                                        y = current.y - dy / MODEL_DRAG_PIXELS_PER_UNIT
+                                                    )
+                                                    ModelGestureMode.ROTATE -> current.copy(
+                                                        rx = current.rx + dy * EDGE_ROTATION_DEGREES_PER_PIXEL,
+                                                        ry = current.ry + dx * EDGE_ROTATION_DEGREES_PER_PIXEL
+                                                    )
+                                                    ModelGestureMode.NONE -> current
+                                                }
+                                                submitTransform(id, next)
+                                                touchState.didTransform = true
+                                            }
+                                        }
+                                    }
+                                }
+                                touchState.lastX = event.x
+                                touchState.lastY = event.y
+                            }
+                            false
+                        }
+
+                        ViewportTouchTarget.NONE -> false
+                    }
+                }
+
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (touchState.activeTarget == ViewportTouchTarget.BACKGROUND) {
+                        val remaining = (0 until event.pointerCount)
+                            .filter { it != event.actionIndex }
+                            .take(2)
+                        if (remaining.size == 1) {
+                            touchState.lastX = event.getX(remaining[0])
+                            touchState.lastY = event.getY(remaining[0])
+                            touchState.pressDownX = touchState.lastX
+                            touchState.pressDownY = touchState.lastY
+                            touchState.backgroundLastSpan = 0f
+                        } else if (remaining.size >= 2) {
+                            val x0 = event.getX(remaining[0]); val y0 = event.getY(remaining[0])
+                            val x1 = event.getX(remaining[1]); val y1 = event.getY(remaining[1])
+                            touchState.backgroundLastCentroidX = (x0 + x1) * 0.5f
+                            touchState.backgroundLastCentroidY = (y0 + y1) * 0.5f
+                            val dx = x1 - x0; val dy = y1 - y0
+                            touchState.backgroundLastSpan = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+                            touchState.backgroundLastAngle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     touchState.pendingLongPress?.let(mainHandler::removeCallbacks)
                     touchState.pendingLongPress = null
-                    touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
+                    if (touchState.activeTarget == ViewportTouchTarget.MODEL) {
+                        touchState.activeModelId?.takeIf { touchState.didTransform }?.let(::finishGesture)
+                    } else if (touchState.activeTarget == ViewportTouchTarget.BACKGROUND && touchState.backgroundHasChanged) {
+                        latestOnBackgroundGestureFinished.value()
+                    }
+                    val consumed = touchState.activeTarget == ViewportTouchTarget.BACKGROUND
                     touchState.activeModelId = null
+                    touchState.activeTarget = ViewportTouchTarget.NONE
                     touchState.gestureMode = ModelGestureMode.NONE
                     touchState.didTransform = false
+                    touchState.backgroundHasChanged = false
+                    consumed
                 }
+
+                else -> touchState.activeTarget == ViewportTouchTarget.BACKGROUND
             }
-            false
         },
         onFrame = {
             if (hasReportedFrame.compareAndSet(false, true)) {
@@ -426,10 +570,13 @@ private fun SceneNode.configureManualModelGestures() {
 }
 
 private const val LONG_PRESS_TIMEOUT_MS = 1_500L
-private const val MODEL_DRAG_PIXELS_PER_UNIT = 180f
+private const val MODEL_DRAG_PIXELS_PER_UNIT = 95f
 private const val EDGE_ROTATION_DEGREES_PER_PIXEL = 0.45f
 private const val MODEL_EDGE_THRESHOLD = 0.74f
 private const val CARD_EDGE_THRESHOLD = 0.78f
+
+private fun normalizeGestureDegrees(value: Float): Float =
+    ((value + 180f) % 360f + 360f) % 360f - 180f
 
 /** Returns true when the initial contact point lies near the model's silhouette edge. */
 private fun isModelEdgeHit(hitResult: HitResult?, model: NativeSceneModel?): Boolean {
