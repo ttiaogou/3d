@@ -1,6 +1,7 @@
 package com.example.mobile3dstudio.ui
 
 import android.graphics.Bitmap
+import android.webkit.WebView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -10,16 +11,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
@@ -34,47 +39,79 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.mobile3dstudio.ui.scene.Scene3DViewport
+import com.example.mobile3dstudio.ui.scene.DiceSceneWebView
+
+const val MODEL_FRAGMENT = "fragment-dice"
+const val MODEL_CUT = "cut-dice"
+const val MODEL_POKER = "poker"
+
+data class SceneObjectUi(
+    val id: Long,
+    val kind: String,
+    val value: String,
+    val cutPercent: Float? = null
+) {
+    val title: String
+        get() = when (kind) {
+            MODEL_FRAGMENT -> "骰子1 · ${value}点 · #$id"
+            MODEL_CUT -> "骰子2 · ${value}点 · ${cutPercent?.let { "${it.toInt()}% · " } ?: ""}#$id"
+            MODEL_POKER -> "红桃Q · #$id"
+            else -> "模型 #$id"
+        }
+}
+
+data class ModelTransformUi(
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val z: Float = 0f,
+    val rx: Float = 0f,
+    val ry: Float = 0f,
+    val rz: Float = 0f
+)
 
 @Composable
 fun EditorScreen(
     snackbarHostState: SnackbarHostState,
-    hasImage: Boolean,
     imageLoadState: ImageLoadState,
     imageBitmap: Bitmap?,
     imageScale: Float,
     imageOffsetX: Float,
     imageOffsetY: Float,
-    imageRotationZ: Float,
-    imageRotationX: Float,
-    imageRotationY: Float,
-    isThreeDMode: Boolean,
+    imageRotation: Float,
+    isModelWorkspace: Boolean,
+    selectedModelType: String,
+    pointInput: String,
+    sceneObjects: List<SceneObjectUi>,
+    selectedObjectId: Long?,
+    selectedTransform: ModelTransformUi,
+    canUndo: Boolean,
+    rendererReady: Boolean,
+    onWebViewReady: (WebView) -> Unit,
+    onSceneState: (String) -> Unit,
     onImportImage: () -> Unit,
-    onScaleChange: (Float) -> Unit,
-    onOffsetXChange: (Float) -> Unit,
-    onOffsetYChange: (Float) -> Unit,
-    onRotationZChange: (Float) -> Unit,
-    onRotationXChange: (Float) -> Unit,
-    onRotationYChange: (Float) -> Unit,
-    onGestureTransform: (
-        centroidX: Float,
-        centroidY: Float,
-        panX: Float,
-        panY: Float,
-        zoom: Float,
-        rotation: Float,
-        width: Float,
-        height: Float
-    ) -> Unit,
-    onToggleThreeD: () -> Unit,
-    onResetTransforms: () -> Unit,
-    onExport: (String) -> Unit
+    onRemoveImage: () -> Unit,
+    onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
+    onEnterModels: () -> Unit,
+    onReturnToImage: () -> Unit,
+    onModelTypeSelect: (String) -> Unit,
+    onPointInputChange: (String) -> Unit,
+    onGenerateModel: () -> Unit,
+    onSelectObject: (Long) -> Unit,
+    onModelTransformChange: (String, Float) -> Unit,
+    onModelTransformFinish: () -> Unit,
+    onDefaultModel: () -> Unit,
+    onUndo: () -> Unit,
+    onExportPng: () -> Unit,
+    onExportGlb: () -> Unit
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -84,150 +121,149 @@ fun EditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // The former app toolbar has been removed. Keep the control panel close
-            // to its previous physical height while giving the preview the freed space.
-            PreviewWorkspace(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.625f),
-                imageBitmap = imageBitmap,
-                imageLoadState = imageLoadState,
-                imageScale = imageScale,
-                imageOffsetX = imageOffsetX,
-                imageOffsetY = imageOffsetY,
-                imageRotationZ = imageRotationZ,
-                imageRotationX = imageRotationX,
-                imageRotationY = imageRotationY,
-                isThreeDMode = isThreeDMode,
-                onImportImage = onImportImage,
-                onGestureTransform = onGestureTransform
-            )
+                    .weight(0.625f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                // Keep the original WebGL renderer alive while flat-image editing is active.
+                DiceSceneWebView(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(if (isModelWorkspace) 1f else 0.001f),
+                    onWebViewReady = onWebViewReady,
+                    onSceneState = onSceneState
+                )
 
-            ImageParameterPanel(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.375f),
-                hasImage = hasImage && imageBitmap != null,
-                imageScale = imageScale,
-                imageOffsetX = imageOffsetX,
-                imageOffsetY = imageOffsetY,
-                imageRotationZ = imageRotationZ,
-                imageRotationX = imageRotationX,
-                imageRotationY = imageRotationY,
-                isThreeDMode = isThreeDMode,
-                onScaleChange = onScaleChange,
-                onOffsetXChange = onOffsetXChange,
-                onOffsetYChange = onOffsetYChange,
-                onRotationZChange = onRotationZChange,
-                onRotationXChange = onRotationXChange,
-                onRotationYChange = onRotationYChange,
-                onImportImage = onImportImage,
-                onToggleThreeD = onToggleThreeD,
-                onResetTransforms = onResetTransforms,
-                onExport = onExport
-            )
+                if (!isModelWorkspace) {
+                    FlatImageWorkspace(
+                        imageLoadState = imageLoadState,
+                        imageBitmap = imageBitmap,
+                        imageScale = imageScale,
+                        imageOffsetX = imageOffsetX,
+                        imageOffsetY = imageOffsetY,
+                        imageRotation = imageRotation,
+                        onImportImage = onImportImage,
+                        onFlatGesture = onFlatGesture,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            if (isModelWorkspace) {
+                ModelWorkbench(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.375f),
+                    hasImage = imageBitmap != null,
+                    onImportImage = onImportImage,
+                    onRemoveImage = onRemoveImage,
+                    onExportPng = onExportPng,
+                    onExportGlb = onExportGlb,
+                    selectedModelType = selectedModelType,
+                    pointInput = pointInput,
+                    sceneObjects = sceneObjects,
+                    selectedObjectId = selectedObjectId,
+                    selectedTransform = selectedTransform,
+                    canUndo = canUndo,
+                    rendererReady = rendererReady,
+                    onModelTypeSelect = onModelTypeSelect,
+                    onPointInputChange = onPointInputChange,
+                    onGenerateModel = onGenerateModel,
+                    onSelectObject = onSelectObject,
+                    onModelTransformChange = onModelTransformChange,
+                    onModelTransformFinish = onModelTransformFinish,
+                    onDefaultModel = onDefaultModel,
+                    onUndo = onUndo,
+                    onReturnToImage = onReturnToImage
+                )
+            } else {
+                FlatImagePanel(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.375f),
+                    hasImage = imageBitmap != null,
+                    onEnterModels = onEnterModels,
+                    onImportImage = onImportImage,
+                    onRemoveImage = onRemoveImage,
+                    onExportPng = onExportPng,
+                    onExportGlb = onExportGlb
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun PreviewWorkspace(
-    modifier: Modifier = Modifier,
-    imageBitmap: Bitmap?,
+private fun FlatImageWorkspace(
     imageLoadState: ImageLoadState,
+    imageBitmap: Bitmap?,
     imageScale: Float,
     imageOffsetX: Float,
     imageOffsetY: Float,
-    imageRotationZ: Float,
-    imageRotationX: Float,
-    imageRotationY: Float,
-    isThreeDMode: Boolean,
+    imageRotation: Float,
     onImportImage: () -> Unit,
-    onGestureTransform: (
-        Float, Float, Float, Float, Float, Float, Float, Float
-    ) -> Unit
+    onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(22.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center
-    ) {
-        when {
-            imageBitmap != null && isThreeDMode -> {
-                Scene3DViewport(
-                    modifier = Modifier.fillMaxSize(),
-                    imageBitmap = imageBitmap,
-                    imageScale = imageScale,
-                    imageOffsetX = imageOffsetX,
-                    imageOffsetY = imageOffsetY,
-                    rotationX = imageRotationX,
-                    rotationY = imageRotationY,
-                    rotationZ = imageRotationZ
-                )
-            }
-
-            imageBitmap != null -> {
-                // Crop fills the entire workspace without distorting the bitmap.
-                // Pinch-out and drag let the user inspect the parts outside the viewport.
-                Image(
-                    bitmap = imageBitmap.asImageBitmap(),
-                    contentDescription = "图片预览",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = imageScale
-                            scaleY = imageScale
-                            translationX = imageOffsetX * size.width
-                            translationY = imageOffsetY * size.height
-                            rotationZ = imageRotationZ
-                        },
-                    contentScale = ContentScale.Crop,
-                    alignment = Alignment.Center
-                )
-                ImageGestureLayer(
-                    imageBitmap = imageBitmap,
-                    onGestureTransform = onGestureTransform,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            else -> {
-                EmptyOrLoadingState(
-                    imageLoadState = imageLoadState,
-                    onImportImage = onImportImage,
-                    modifier = Modifier.fillMaxSize()
-                )
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        if (imageBitmap != null) {
+            Image(
+                bitmap = imageBitmap.asImageBitmap(),
+                contentDescription = "平面图片预览",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = imageScale
+                        scaleY = imageScale
+                        translationX = imageOffsetX * size.width
+                        translationY = imageOffsetY * size.height
+                        rotationZ = imageRotation
+                    },
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.Center
+            )
+            FlatGestureLayer(
+                imageBitmap = imageBitmap,
+                onFlatGesture = onFlatGesture,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                when (imageLoadState) {
+                    ImageLoadState.Empty -> Text("导入图片开始编辑", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ImageLoadState.Loading -> Text("正在载入图片…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    is ImageLoadState.Failure -> Text(imageLoadState.message, color = MaterialTheme.colorScheme.error)
+                    is ImageLoadState.Success -> Unit
+                }
+                OutlinedButton(onClick = onImportImage) { Text("选择图片") }
             }
         }
     }
 }
 
 @Composable
-private fun ImageGestureLayer(
+private fun FlatGestureLayer(
     imageBitmap: Bitmap,
-    onGestureTransform: (
-        Float, Float, Float, Float, Float, Float, Float, Float
-    ) -> Unit,
+    onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val latestOnGestureTransform by rememberUpdatedState(onGestureTransform)
-
+    val latestGesture by rememberUpdatedState(onFlatGesture)
     Box(
         modifier = modifier.pointerInput(imageBitmap) {
             detectTransformGestures { centroid, pan, zoom, rotation ->
-                latestOnGestureTransform(
-                    centroid.x,
-                    centroid.y,
-                    pan.x,
-                    pan.y,
-                    zoom,
-                    rotation,
-                    size.width.toFloat(),
-                    size.height.toFloat()
+                latestGesture(
+                    centroid.x, centroid.y, pan.x, pan.y, zoom, rotation,
+                    size.width.toFloat(), size.height.toFloat()
                 )
             }
         }
@@ -235,257 +271,238 @@ private fun ImageGestureLayer(
 }
 
 @Composable
-private fun EmptyOrLoadingState(
-    imageLoadState: ImageLoadState,
+private fun FlatImagePanel(
+    modifier: Modifier,
+    hasImage: Boolean,
+    onEnterModels: () -> Unit,
     onImportImage: () -> Unit,
-    modifier: Modifier = Modifier
+    onRemoveImage: () -> Unit,
+    onExportPng: () -> Unit,
+    onExportGlb: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface
     ) {
-        when (imageLoadState) {
-            ImageLoadState.Empty -> {
-                Text(
-                    "尚未导入图片",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedButton(onClick = onImportImage) {
-                    Text("导入图片")
-                }
-            }
-
-            ImageLoadState.Loading -> {
-                Text(
-                    "正在载入图片…",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            is ImageLoadState.Failure -> {
-                Text(
-                    imageLoadState.message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                OutlinedButton(onClick = onImportImage) {
-                    Text("重新选择")
-                }
-            }
-
-            is ImageLoadState.Success -> Unit
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            OutlinedButton(onClick = onEnterModels) { Text("模型") }
+            PanelMenuButton(
+                onImportImage = onImportImage,
+                onRemoveImage = onRemoveImage,
+                onExportPng = onExportPng,
+                onExportGlb = onExportGlb,
+                hasImage = hasImage
+            )
         }
     }
 }
 
 @Composable
-private fun ImageParameterPanel(
-    modifier: Modifier = Modifier,
-    hasImage: Boolean,
-    imageScale: Float,
-    imageOffsetX: Float,
-    imageOffsetY: Float,
-    imageRotationZ: Float,
-    imageRotationX: Float,
-    imageRotationY: Float,
-    isThreeDMode: Boolean,
-    onScaleChange: (Float) -> Unit,
-    onOffsetXChange: (Float) -> Unit,
-    onOffsetYChange: (Float) -> Unit,
-    onRotationZChange: (Float) -> Unit,
-    onRotationXChange: (Float) -> Unit,
-    onRotationYChange: (Float) -> Unit,
+private fun PanelMenuButton(
     onImportImage: () -> Unit,
-    onToggleThreeD: () -> Unit,
-    onResetTransforms: () -> Unit,
-    onExport: (String) -> Unit
+    onRemoveImage: () -> Unit,
+    onExportPng: () -> Unit,
+    onExportGlb: () -> Unit,
+    hasImage: Boolean
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
+        androidx.compose.material3.DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text(if (hasImage) "更换图片" else "导入图片") },
+                onClick = { expanded = false; onImportImage() }
+            )
+            if (hasImage) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("移除图片") },
+                    onClick = { expanded = false; onRemoveImage() }
+                )
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("导出 PNG") },
+                    onClick = { expanded = false; onExportPng() }
+                )
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("导出 GLB") },
+                    enabled = false,
+                    onClick = { expanded = false; onExportGlb() }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelWorkbench(
+    modifier: Modifier,
+    hasImage: Boolean,
+    onImportImage: () -> Unit,
+    onRemoveImage: () -> Unit,
+    onExportPng: () -> Unit,
+    onExportGlb: () -> Unit,
+    selectedModelType: String,
+    pointInput: String,
+    sceneObjects: List<SceneObjectUi>,
+    selectedObjectId: Long?,
+    selectedTransform: ModelTransformUi,
+    canUndo: Boolean,
+    rendererReady: Boolean,
+    onModelTypeSelect: (String) -> Unit,
+    onPointInputChange: (String) -> Unit,
+    onGenerateModel: () -> Unit,
+    onSelectObject: (Long) -> Unit,
+    onModelTransformChange: (String, Float) -> Unit,
+    onModelTransformFinish: () -> Unit,
+    onDefaultModel: () -> Unit,
+    onUndo: () -> Unit,
+    onReturnToImage: () -> Unit
 ) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+        color = MaterialTheme.colorScheme.surface
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("模型生成", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onUndo, enabled = canUndo) {
+                        Text("↶", style = MaterialTheme.typography.headlineSmall)
+                    }
+                    IconButton(onClick = onReturnToImage) {
+                        Text("↪", style = MaterialTheme.typography.headlineSmall)
+                    }
+                    PanelMenuButton(
+                        onImportImage = onImportImage,
+                        onRemoveImage = onRemoveImage,
+                        onExportPng = onExportPng,
+                        onExportGlb = onExportGlb,
+                        hasImage = hasImage
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                ModelTypeChip("骰子 1", selectedModelType == MODEL_FRAGMENT) { onModelTypeSelect(MODEL_FRAGMENT) }
+                ModelTypeChip("骰子 2", selectedModelType == MODEL_CUT) { onModelTypeSelect(MODEL_CUT) }
+                ModelTypeChip("扑克", selectedModelType == MODEL_POKER) { onModelTypeSelect(MODEL_POKER) }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (selectedModelType != MODEL_POKER) {
+                    OutlinedTextField(
+                        value = pointInput,
+                        onValueChange = { raw -> onPointInputChange(raw.filter(Char::isDigit).take(1)) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("点数 0–9") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("红桃 Q", modifier = Modifier.padding(horizontal = 12.dp, vertical = 17.dp))
+                    }
+                }
+                Button(
+                    onClick = onGenerateModel,
+                    enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
+                ) { Text("生成模型") }
+            }
+            if (!rendererReady) {
+                Text("3D 渲染器初始化中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            if (sceneObjects.isNotEmpty()) {
+                Text("场景对象", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(sceneObjects, key = { it.id }) { obj ->
+                        FilterChip(
+                            selected = selectedObjectId == obj.id,
+                            onClick = { onSelectObject(obj.id) },
+                            label = { Text(obj.title) }
+                        )
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "参数调节",
-                    style = MaterialTheme.typography.titleSmall
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = onResetTransforms,
-                        enabled = hasImage
-                    ) {
-                        Text("重置")
-                    }
-
-                    Button(
-                        onClick = onToggleThreeD,
-                        enabled = hasImage
-                    ) {
-                        Text(if (isThreeDMode) "返回平面" else "3D预览")
-                    }
-
-                    ParameterMenu(
-                        hasImage = hasImage,
-                        onImportImage = onImportImage,
-                        onExport = onExport
-                    )
-                }
+                Text("XYZ 移动", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick = onDefaultModel, enabled = selectedObjectId != null) { Text("默认") }
             }
+            ModelSlider("X 移动", selectedTransform.x, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "x")
+            ModelSlider("Y 移动", selectedTransform.y, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "y")
+            ModelSlider("Z 移动", selectedTransform.z, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "z")
 
-            ParameterSlider(
-                title = "缩放",
-                value = imageScale,
-                valueRange = 0.1f..8f,
-                enabled = hasImage,
-                valueText = "${"%.2f".format(imageScale)}×",
-                onValueChange = onScaleChange
-            )
-            ParameterSlider(
-                title = "水平位置",
-                value = imageOffsetX,
-                valueRange = -4f..4f,
-                enabled = hasImage,
-                valueText = "${"%.2f".format(imageOffsetX)}",
-                onValueChange = onOffsetXChange
-            )
-            ParameterSlider(
-                title = "垂直位置",
-                value = imageOffsetY,
-                valueRange = -4f..4f,
-                enabled = hasImage,
-                valueText = "${"%.2f".format(imageOffsetY)}",
-                onValueChange = onOffsetYChange
-            )
-            ParameterSlider(
-                title = "平面旋转",
-                value = imageRotationZ,
-                valueRange = -180f..180f,
-                enabled = hasImage,
-                valueText = "${imageRotationZ.toInt()}°",
-                onValueChange = onRotationZChange
-            )
-
-            if (isThreeDMode) {
-                ParameterSlider(
-                    title = "3D X轴旋转",
-                    value = imageRotationX,
-                    valueRange = -90f..90f,
-                    enabled = hasImage,
-                    valueText = "${imageRotationX.toInt()}°",
-                    onValueChange = onRotationXChange
-                )
-                ParameterSlider(
-                    title = "3D Y轴旋转",
-                    value = imageRotationY,
-                    valueRange = -90f..90f,
-                    enabled = hasImage,
-                    valueText = "${imageRotationY.toInt()}°",
-                    onValueChange = onRotationYChange
-                )
-            }
+            Text("XYZ 旋转", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ModelSlider("X 旋转", selectedTransform.rx, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rx")
+            ModelSlider("Y 旋转", selectedTransform.ry, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "ry")
+            ModelSlider("Z 旋转", selectedTransform.rz, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rz")
         }
     }
 }
 
 @Composable
-private fun ParameterMenu(
-    hasImage: Boolean,
-    onImportImage: () -> Unit,
-    onExport: (String) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box {
-        Surface(
-            shape = RoundedCornerShape(50),
-            color = MaterialTheme.colorScheme.surfaceVariant
-        ) {
-            IconButton(onClick = { expanded = true }) {
-                Text(
-                    "⋮",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text(if (hasImage) "更换图片" else "导入图片") },
-                onClick = {
-                    expanded = false
-                    onImportImage()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("导出 PNG") },
-                enabled = hasImage,
-                onClick = {
-                    expanded = false
-                    onExport("PNG")
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("导出 GLB") },
-                enabled = hasImage,
-                onClick = {
-                    expanded = false
-                    onExport("GLB")
-                }
-            )
-        }
-    }
+private fun ModelTypeChip(title: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(selected = selected, onClick = onClick, label = { Text(title) })
 }
 
 @Composable
-private fun ParameterSlider(
+private fun ModelSlider(
     title: String,
     value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
+    range: ClosedFloatingPointRange<Float>,
     enabled: Boolean,
-    valueText: String,
-    onValueChange: (Float) -> Unit
+    onChange: (String, Float) -> Unit,
+    onFinished: () -> Unit,
+    axis: String
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(title, style = MaterialTheme.typography.bodySmall)
-            Text(
-                valueText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.secondary
-            )
+            Text("${"%.2f".format(value)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
         }
         Slider(
-            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
-            onValueChange = onValueChange,
-            valueRange = valueRange,
+            value = value.coerceIn(range.start, range.endInclusive),
+            onValueChange = { onChange(axis, it) },
+            onValueChangeFinished = onFinished,
+            valueRange = range,
             enabled = enabled
         )
     }
 }
+

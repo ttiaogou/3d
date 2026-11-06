@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
@@ -24,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -39,40 +41,23 @@ fun Mobile3DStudioApp() {
     var imageLoadState by remember { mutableStateOf<ImageLoadState>(ImageLoadState.Empty) }
     var importJob by remember { mutableStateOf<Job?>(null) }
 
-    // Flat image editing defaults. Values are normalized against the preview viewport.
-    var imageScale by rememberSaveable { mutableFloatStateOf(1f) }
-    var imageOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
-    var imageOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
-    var imageRotationZ by rememberSaveable { mutableFloatStateOf(0f) }
+    // Flat image transform state is independent from the model scene.
+    var flatScale by rememberSaveable { mutableFloatStateOf(1f) }
+    var flatOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
+    var flatOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
+    var flatRotation by rememberSaveable { mutableFloatStateOf(0f) }
 
-    // 3D view is opt-in and currently means a textured plane, not an AI reconstructed solid.
-    var isThreeDMode by rememberSaveable { mutableStateOf(false) }
-    var imageRotationX by rememberSaveable { mutableFloatStateOf(0f) }
-    var imageRotationY by rememberSaveable { mutableFloatStateOf(0f) }
+    // Native workbench UI state.
+    var isModelWorkspace by rememberSaveable { mutableStateOf(false) }
+    var selectedModelType by rememberSaveable { mutableStateOf(MODEL_FRAGMENT) }
+    var pointInput by rememberSaveable { mutableStateOf("9") }
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var rendererReady by remember { mutableStateOf(false) }
+    var sceneObjects by remember { mutableStateOf<List<SceneObjectUi>>(emptyList()) }
+    var selectedObjectId by remember { mutableStateOf<Long?>(null) }
+    var selectedTransform by remember { mutableStateOf(ModelTransformUi()) }
+    var canUndo by remember { mutableStateOf(false) }
 
-    // Restore the already-copied private image after activity/process recreation.
-    LaunchedEffect(Unit) {
-        val restoredPath = savedImagePath
-        if (restoredPath != null) {
-            imageLoadState = ImageLoadState.Loading
-            imageLoadState = try {
-                val bitmap = withContext(Dispatchers.IO) {
-                    decodeImage(File(restoredPath))
-                }
-                ImageLoadState.Success(bitmap)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                ImageLoadState.Failure(
-                    error.message?.takeIf(String::isNotBlank)
-                        ?: "图片读取失败，请重新选择图片。"
-                )
-            }
-        }
-    }
-
-    // OpenDocument supplies a document URI; copy it immediately into app-private storage.
-    // The workspace and renderer no longer depend on a temporary Photo Picker content URI.
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -80,37 +65,33 @@ fun Mobile3DStudioApp() {
             importJob?.cancel()
             importJob = scope.launch {
                 imageLoadState = ImageLoadState.Loading
+                var importedFile: File? = null
                 try {
-                    val importedFile = withContext(Dispatchers.IO) {
+                    val copiedFile = withContext(Dispatchers.IO) {
                         copyImageToPrivateStorage(context, uri)
                     }
-                    val bitmap = withContext(Dispatchers.IO) {
-                        decodeImage(importedFile)
-                    }
-
-                    val previousPath = savedImagePath
-                    savedImagePath = importedFile.absolutePath
+                    importedFile = copiedFile
+                    val bitmap = withContext(Dispatchers.IO) { decodeImage(copiedFile) }
+                    val oldPath = savedImagePath
+                    savedImagePath = copiedFile.absolutePath
                     imageLoadState = ImageLoadState.Success(bitmap)
-                    isThreeDMode = false
-                    resetImageTransforms(
-                        onScale = { imageScale = it },
-                        onOffsetX = { imageOffsetX = it },
-                        onOffsetY = { imageOffsetY = it },
-                        onRotationZ = { imageRotationZ = it },
-                        onRotationX = { imageRotationX = it },
-                        onRotationY = { imageRotationY = it }
+                    isModelWorkspace = false
+                    resetFlatTransform(
+                        onScale = { flatScale = it },
+                        onX = { flatOffsetX = it },
+                        onY = { flatOffsetY = it },
+                        onRotation = { flatRotation = it }
                     )
-
-                    if (previousPath != null && previousPath != importedFile.absolutePath) {
-                        withContext(Dispatchers.IO) { File(previousPath).delete() }
+                    if (oldPath != null && oldPath != copiedFile.absolutePath) {
+                        withContext(Dispatchers.IO) { File(oldPath).delete() }
                     }
                     snackbarHostState.showSnackbar("图片载入完成")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
+                    importedFile?.let { file -> withContext(Dispatchers.IO) { file.delete() } }
                     imageLoadState = ImageLoadState.Failure(
-                        error.message?.takeIf(String::isNotBlank)
-                            ?: "图片载入失败，请重新选择。"
+                        error.message?.takeIf(String::isNotBlank) ?: "无法读取图片，请重新选择。"
                     )
                     snackbarHostState.showSnackbar("图片载入失败")
                 }
@@ -118,105 +99,169 @@ fun Mobile3DStudioApp() {
         }
     }
 
+    // Restore the local image copy after activity/process recreation.
+    LaunchedEffect(Unit) {
+        val path = savedImagePath
+        if (path != null) {
+            val file = File(path)
+            imageLoadState = ImageLoadState.Loading
+            imageLoadState = try {
+                val bitmap = withContext(Dispatchers.IO) { decodeImage(file) }
+                ImageLoadState.Success(bitmap)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                ImageLoadState.Failure(error.message?.takeIf(String::isNotBlank) ?: "图片读取失败。")
+            }
+        }
+    }
+
+    fun runJs(script: String) {
+        val target = webView ?: run {
+            scope.launch { snackbarHostState.showSnackbar("3D 渲染器尚未准备好") }
+            return
+        }
+        target.post { target.evaluateJavascript(script, null) }
+    }
+
+    fun applySceneState(json: String) {
+        runCatching {
+            val root = JSONObject(json)
+            rendererReady = root.optBoolean("ready", false)
+            canUndo = root.optBoolean("canUndo", false)
+            val list = root.optJSONArray("objects")
+            val nextObjects = buildList {
+                if (list != null) {
+                    for (i in 0 until list.length()) {
+                        val item = list.optJSONObject(i) ?: continue
+                        add(
+                            SceneObjectUi(
+                                id = item.optLong("id"),
+                                kind = item.optString("kind"),
+                                value = item.optString("value"),
+                                cutPercent = if (item.isNull("cutPercent")) null else item.optDouble("cutPercent").toFloat()
+                            )
+                        )
+                    }
+                }
+            }
+            sceneObjects = nextObjects
+            val selected = root.optJSONObject("selected")
+            if (selected == null) {
+                selectedObjectId = null
+                selectedTransform = ModelTransformUi()
+            } else {
+                selectedObjectId = selected.optLong("id")
+                selectedTransform = ModelTransformUi(
+                    x = selected.optDouble("x", 0.0).toFloat(),
+                    y = selected.optDouble("y", 0.0).toFloat(),
+                    z = selected.optDouble("z", 0.0).toFloat(),
+                    rx = selected.optDouble("rx", 0.0).toFloat(),
+                    ry = selected.optDouble("ry", 0.0).toFloat(),
+                    rz = selected.optDouble("rz", 0.0).toFloat()
+                )
+            }
+        }.onFailure { error ->
+            android.util.Log.e("Mobile3DStudio", "Invalid scene state from WebGL", error)
+        }
+    }
+
     val imageBitmap = (imageLoadState as? ImageLoadState.Success)?.bitmap
 
     EditorScreen(
         snackbarHostState = snackbarHostState,
-        hasImage = savedImagePath != null,
         imageLoadState = imageLoadState,
         imageBitmap = imageBitmap,
-        imageScale = imageScale,
-        imageOffsetX = imageOffsetX,
-        imageOffsetY = imageOffsetY,
-        imageRotationZ = imageRotationZ,
-        imageRotationX = imageRotationX,
-        imageRotationY = imageRotationY,
-        isThreeDMode = isThreeDMode,
-        onImportImage = {
-            imagePicker.launch(arrayOf("image/*"))
+        imageScale = flatScale,
+        imageOffsetX = flatOffsetX,
+        imageOffsetY = flatOffsetY,
+        imageRotation = flatRotation,
+        isModelWorkspace = isModelWorkspace,
+        selectedModelType = selectedModelType,
+        pointInput = pointInput,
+        sceneObjects = sceneObjects,
+        selectedObjectId = selectedObjectId,
+        selectedTransform = selectedTransform,
+        canUndo = canUndo,
+        rendererReady = rendererReady,
+        onWebViewReady = { readyView ->
+            if (webView !== readyView) webView = readyView
         },
-        onScaleChange = { imageScale = it },
-        onOffsetXChange = { imageOffsetX = it },
-        onOffsetYChange = { imageOffsetY = it },
-        onRotationZChange = { imageRotationZ = it },
-        onRotationXChange = { imageRotationX = it },
-        onRotationYChange = { imageRotationY = it },
-        onGestureTransform = { centroidX, centroidY, panX, panY, zoom, rotation, width, height ->
+        onSceneState = { json -> applySceneState(json) },
+        onImportImage = { imagePicker.launch(arrayOf("image/*")) },
+        onRemoveImage = {
+            savedImagePath?.let { path -> scope.launch(Dispatchers.IO) { File(path).delete() } }
+            savedImagePath = null
+            imageLoadState = ImageLoadState.Empty
+            resetFlatTransform(
+                onScale = { flatScale = it },
+                onX = { flatOffsetX = it },
+                onY = { flatOffsetY = it },
+                onRotation = { flatRotation = it }
+            )
+        },
+        onFlatGesture = { centroidX, centroidY, panX, panY, zoom, rotation, width, height ->
             val safeWidth = width.coerceAtLeast(1f)
             val safeHeight = height.coerceAtLeast(1f)
-            val localCentroidX = centroidX - safeWidth / 2f
-            val localCentroidY = centroidY - safeHeight / 2f
-
-            imageOffsetX = (
-                imageOffsetX * zoom +
-                    localCentroidX * (1f - zoom) / safeWidth +
-                    panX / safeWidth
-                ).coerceIn(-4f, 4f)
-
-            imageOffsetY = (
-                imageOffsetY * zoom +
-                    localCentroidY * (1f - zoom) / safeHeight +
-                    panY / safeHeight
-                ).coerceIn(-4f, 4f)
-
-            imageScale = (imageScale * zoom).coerceIn(0.1f, 8f)
-            imageRotationZ = normalizeDegrees(imageRotationZ + rotation)
+            val localX = centroidX - safeWidth / 2f
+            val localY = centroidY - safeHeight / 2f
+            flatOffsetX = (
+                flatOffsetX * zoom + localX * (1f - zoom) / safeWidth + panX / safeWidth
+            ).coerceIn(-4f, 4f)
+            flatOffsetY = (
+                flatOffsetY * zoom + localY * (1f - zoom) / safeHeight + panY / safeHeight
+            ).coerceIn(-4f, 4f)
+            flatScale = (flatScale * zoom).coerceIn(0.1f, 8f)
+            flatRotation = normalizeDegrees(flatRotation + rotation)
         },
-        onToggleThreeD = {
-            isThreeDMode = !isThreeDMode
-            if (isThreeDMode) {
-                scope.launch {
-                    snackbarHostState.showSnackbar(
-                        "当前为 3D 纹理平面预览，尚未进行真实模型重建。"
-                    )
+        onEnterModels = { isModelWorkspace = true },
+        onReturnToImage = { isModelWorkspace = false },
+        onModelTypeSelect = { selectedModelType = it },
+        onPointInputChange = { pointInput = it },
+        onGenerateModel = {
+            if (!rendererReady) {
+                scope.launch { snackbarHostState.showSnackbar("3D 引擎仍在初始化") }
+            } else {
+                when (selectedModelType) {
+                    MODEL_FRAGMENT -> runJs("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})")
+                    MODEL_CUT -> runJs("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})")
+                    MODEL_POKER -> runJs("window.Mobile3DStudio.addPoker()")
                 }
             }
         },
-        onResetTransforms = {
-            resetImageTransforms(
-                onScale = { imageScale = it },
-                onOffsetX = { imageOffsetX = it },
-                onOffsetY = { imageOffsetY = it },
-                onRotationZ = { imageRotationZ = it },
-                onRotationX = { imageRotationX = it },
-                onRotationY = { imageRotationY = it }
-            )
+        onSelectObject = { id -> runJs("window.Mobile3DStudio.selectObject($id)") },
+        onModelTransformChange = { axis, value ->
+            runJs("window.Mobile3DStudio.setTransform('$axis',$value)")
         },
-        onExport = { format ->
-            val message = when (format) {
-                "PNG" -> "PNG 导出功能尚未接入"
-                "GLB" -> "GLB 模型导出功能尚未接入"
-                else -> "不支持的导出格式"
-            }
-            scope.launch { snackbarHostState.showSnackbar(message) }
+        onModelTransformFinish = { runJs("window.Mobile3DStudio.endTransformBatch()") },
+        onDefaultModel = { runJs("window.Mobile3DStudio.resetSelected()") },
+        onUndo = { runJs("window.Mobile3DStudio.undo()") },
+        onExportPng = {
+            scope.launch { snackbarHostState.showSnackbar("PNG 导出入口已保留，原生保存流程尚未接入") }
+        },
+        onExportGlb = {
+            scope.launch { snackbarHostState.showSnackbar("GLB 网格导出器尚未实现") }
         }
     )
 }
 
-private fun resetImageTransforms(
+private fun resetFlatTransform(
     onScale: (Float) -> Unit,
-    onOffsetX: (Float) -> Unit,
-    onOffsetY: (Float) -> Unit,
-    onRotationZ: (Float) -> Unit,
-    onRotationX: (Float) -> Unit,
-    onRotationY: (Float) -> Unit
+    onX: (Float) -> Unit,
+    onY: (Float) -> Unit,
+    onRotation: (Float) -> Unit
 ) {
     onScale(1f)
-    onOffsetX(0f)
-    onOffsetY(0f)
-    onRotationZ(0f)
-    onRotationX(0f)
-    onRotationY(0f)
+    onX(0f)
+    onY(0f)
+    onRotation(0f)
 }
 
-private fun normalizeDegrees(degrees: Float): Float {
-    return ((degrees + 180f) % 360f + 360f) % 360f - 180f
-}
+private fun normalizeDegrees(degrees: Float): Float =
+    ((degrees + 180f) % 360f + 360f) % 360f - 180f
 
 private fun copyImageToPrivateStorage(context: Context, uri: Uri): File {
-    val resolver = context.contentResolver
-    val mimeType = resolver.getType(uri)
-    val extension = when (mimeType?.lowercase()) {
+    val extension = when (context.contentResolver.getType(uri)?.lowercase()) {
         "image/jpeg", "image/jpg" -> "jpg"
         "image/png" -> "png"
         "image/webp" -> "webp"
@@ -227,75 +272,42 @@ private fun copyImageToPrivateStorage(context: Context, uri: Uri): File {
         "image/bmp" -> "bmp"
         else -> "img"
     }
-
-    val directory = File(context.filesDir, "imported-images")
-    if (!directory.exists() && !directory.mkdirs()) {
-        throw IOException("无法创建图片缓存目录。")
-    }
-
-    val destination = File(directory, "image_${UUID.randomUUID()}.$extension")
+    val dir = File(context.filesDir, "imported-images")
+    if (!dir.exists() && !dir.mkdirs()) throw IOException("无法创建图片缓存目录。")
+    val destination = File(dir, "image_${UUID.randomUUID()}.$extension")
     try {
-        val input = resolver.openInputStream(uri)
-            ?: throw IOException(
-                "系统无法读取所选图片。请重新选择，或先将图片保存到设备本地。"
-            )
-
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw IOException("系统无法读取所选图片，请重新选择。")
         input.use { source ->
             FileOutputStream(destination).use { output ->
-                val copiedBytes = source.copyTo(output)
+                if (source.copyTo(output) <= 0L) throw IOException("所选图片文件为空。")
                 output.fd.sync()
-                if (copiedBytes <= 0L) {
-                    throw IOException("所选图片文件为空。")
-                }
             }
-        }
-
-        if (destination.length() <= 0L) {
-            throw IOException("图片复制失败，文件内容为空。")
         }
         return destination
     } catch (error: Exception) {
         destination.delete()
         if (error is IOException) throw error
-        throw IOException("无法读取所选图片：${error.message ?: "未知错误"}", error)
+        throw IOException("图片复制失败：${error.message ?: "未知错误"}", error)
     }
 }
 
-/**
- * Decode from an app-private file rather than reopening a transient content:// URI.
- * The longest decoded edge is limited to maxDimension to control memory consumption.
- */
-private fun decodeImage(
-    file: File,
-    maxDimension: Int = 2048
-): Bitmap {
-    if (!file.exists() || file.length() <= 0L) {
-        throw IOException("图片文件不存在或内容为空，请重新导入。")
-    }
-
+private fun decodeImage(file: File, maxDimension: Int = 2048): Bitmap {
+    if (!file.exists() || file.length() <= 0L) throw IOException("图片文件不存在或内容为空。")
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("无法识别图片格式或图片已损坏。")
 
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-        throw IOException("无法识别图片格式或图片内容已损坏。")
-    }
-
-    var sampleSize = 1
-    while (
-        bounds.outWidth / sampleSize > maxDimension ||
-        bounds.outHeight / sampleSize > maxDimension
-    ) {
-        sampleSize *= 2
-    }
-
-    val options = BitmapFactory.Options().apply {
-        inSampleSize = sampleSize
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-        inScaled = false
-    }
-
-    val decoded = BitmapFactory.decodeFile(file.absolutePath, options)
-        ?: throw IOException("图片解码失败，请尝试 JPG、PNG 或 WebP 格式。")
+    var sample = 1
+    while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) sample *= 2
+    val decoded = BitmapFactory.decodeFile(
+        file.absolutePath,
+        BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
+    ) ?: throw IOException("图片解码失败，请尝试 JPG、PNG 或 WebP 格式。")
 
     val orientation = runCatching {
         ExifInterface(file.absolutePath).getAttributeInt(
@@ -303,42 +315,23 @@ private fun decodeImage(
             ExifInterface.ORIENTATION_NORMAL
         )
     }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
-
     val matrix = Matrix()
     when (orientation) {
         ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
         ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
         ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
-        ExifInterface.ORIENTATION_TRANSPOSE -> {
-            matrix.setRotate(90f)
-            matrix.postScale(-1f, 1f)
-        }
+        ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.setRotate(90f); matrix.postScale(-1f, 1f) }
         ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
-        ExifInterface.ORIENTATION_TRANSVERSE -> {
-            matrix.setRotate(-90f)
-            matrix.postScale(-1f, 1f)
-        }
+        ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.setRotate(-90f); matrix.postScale(-1f, 1f) }
         ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(270f)
         else -> return decoded
     }
-
     return try {
-        Bitmap.createBitmap(
-            decoded,
-            0,
-            0,
-            decoded.width,
-            decoded.height,
-            matrix,
-            true
-        ).also { corrected ->
-            if (corrected !== decoded) decoded.recycle()
+        Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true).also {
+            if (it !== decoded) decoded.recycle()
         }
     } catch (error: Exception) {
         decoded.recycle()
-        throw IOException(
-            "图片方向处理失败：${error.message ?: "未知错误"}",
-            error
-        )
+        throw IOException("图片方向处理失败：${error.message ?: "未知错误"}", error)
     }
 }
