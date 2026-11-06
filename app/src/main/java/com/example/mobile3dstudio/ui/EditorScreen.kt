@@ -14,10 +14,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -47,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.mobile3dstudio.core.model.NativeSceneModel
+import com.example.mobile3dstudio.core.model.NativeTransform
 import com.example.mobile3dstudio.ui.scene.NativeSceneViewport
 import kotlin.math.roundToInt
 
@@ -60,7 +64,8 @@ data class ModelTransformUi(
     val z: Float = 0f,
     val rx: Float = 0f,
     val ry: Float = 0f,
-    val rz: Float = 0f
+    val rz: Float = 0f,
+    val scale: Float = 1f
 )
 
 @Composable
@@ -79,14 +84,18 @@ fun EditorScreen(
     selectedObjectId: Long?,
     selectedTransform: ModelTransformUi,
     canUndo: Boolean,
+    canRedo: Boolean,
     rendererReady: Boolean,
     rendererError: String?,
     nativeModels: List<NativeSceneModel>,
     onNativeModelSelected: (Long?) -> Unit,
+    onLongPressModel: (Long) -> Unit,
+    onDeleteModel: (Long) -> Unit,
     onRendererFrame: () -> Unit,
     onRendererError: (String) -> Unit,
     onPreviewBoundsChanged: (Rect) -> Unit,
     onImportImage: () -> Unit,
+    onImportGlb: () -> Unit,
     onRemoveImage: () -> Unit,
     onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
     onEnterModels: () -> Unit,
@@ -95,12 +104,17 @@ fun EditorScreen(
     onPointInputChange: (String) -> Unit,
     onGenerateModel: () -> Unit,
     onModelTransformChange: (String, Float) -> Unit,
+    onModelTransformGesture: (Long, NativeTransform) -> Unit,
     onModelTransformFinish: () -> Unit,
     onDefaultModel: () -> Unit,
     onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onExportPng: () -> Unit,
-    onExportGlb: () -> Unit
+    onExportGlb: () -> Unit,
+    showPreviewControls: Boolean
 ) {
+    var deleteDialogModelId by remember { mutableStateOf<Long?>(null) }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) }
@@ -128,36 +142,61 @@ fun EditorScreen(
                         )
                     }
             ) {
-                // The imported image is always the workspace background. Entering the model
-                // workbench changes only the lower panel; it never converts or removes the image.
                 FlatImageWorkspace(
-                    imageLoadState = imageLoadState,
                     imageBitmap = imageBitmap,
                     imageScale = imageScale,
                     imageOffsetX = imageOffsetX,
                     imageOffsetY = imageOffsetY,
                     imageRotation = imageRotation,
-                    onImportImage = onImportImage,
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // The native SceneView/Filament viewport renders procedural Kotlin meshes.
-                // Its transparent texture surface leaves the imported image visible beneath it.
                 NativeSceneViewport(
                     modifier = Modifier.fillMaxSize(),
                     models = nativeModels,
+                    selectedModelId = selectedObjectId,
                     onModelSelected = onNativeModelSelected,
+                    onLongPressModel = { id ->
+                        onLongPressModel(id)
+                        deleteDialogModelId = id
+                    },
+                    onModelTransform = { id, transform -> onModelTransformGesture(id, transform) },
+                    onModelTransformFinished = onModelTransformFinish,
                     onRendererFrame = onRendererFrame,
                     onRendererError = onRendererError
                 )
 
-                // In image mode, gestures edit the flat preview. In model mode, taps select
-                // native scene nodes for the transform controls below.
-                if (!isModelWorkspace && imageBitmap != null) {
+                if (!isModelWorkspace && imageBitmap != null && nativeModels.isEmpty()) {
                     FlatGestureLayer(
                         imageBitmap = imageBitmap,
                         onFlatGesture = onFlatGesture,
                         modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                if (showPreviewControls) {
+                    if (imageBitmap == null) {
+                        OutlinedButton(
+                            onClick = onImportImage,
+                            modifier = Modifier.align(Alignment.Center)
+                        ) { Text("选择图片/导入") }
+                    }
+                    PreviewToolbar(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                        canUndo = canUndo,
+                        canRedo = canRedo,
+                        hasImage = imageBitmap != null,
+                        hasExportContent = hasExportContent,
+                        isModelWorkspace = isModelWorkspace,
+                        onUndo = onUndo,
+                        onRedo = onRedo,
+                        onImportImage = onImportImage,
+                        onImportGlb = onImportGlb,
+                        onRemoveImage = onRemoveImage,
+                        onExportPng = onExportPng,
+                        onExportGlb = onExportGlb,
+                        onEnterModels = onEnterModels,
+                        onReturnToImage = onReturnToImage
                     )
                 }
             }
@@ -167,17 +206,10 @@ fun EditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.375f),
-                    hasImage = imageBitmap != null,
-                    hasExportContent = hasExportContent,
-                    onImportImage = onImportImage,
-                    onRemoveImage = onRemoveImage,
-                    onExportPng = onExportPng,
-                    onExportGlb = onExportGlb,
                     selectedModelType = selectedModelType,
                     pointInput = pointInput,
                     selectedObjectId = selectedObjectId,
                     selectedTransform = selectedTransform,
-                    canUndo = canUndo,
                     rendererReady = rendererReady,
                     rendererError = rendererError,
                     onModelTypeSelect = onModelTypeSelect,
@@ -185,37 +217,44 @@ fun EditorScreen(
                     onGenerateModel = onGenerateModel,
                     onModelTransformChange = onModelTransformChange,
                     onModelTransformFinish = onModelTransformFinish,
-                    onDefaultModel = onDefaultModel,
-                    onUndo = onUndo,
-                    onReturnToImage = onReturnToImage
+                    onDefaultModel = onDefaultModel
                 )
             } else {
                 FlatImagePanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.375f),
-                    hasImage = imageBitmap != null,
-                    hasExportContent = hasExportContent,
-                    onEnterModels = onEnterModels,
-                    onImportImage = onImportImage,
-                    onRemoveImage = onRemoveImage,
-                    onExportPng = onExportPng,
-                    onExportGlb = onExportGlb
+                    onEnterModels = onEnterModels
                 )
             }
         }
+    }
+
+    deleteDialogModelId?.let { modelId ->
+        AlertDialog(
+            onDismissRequest = { deleteDialogModelId = null },
+            title = { Text("删除模型") },
+            text = { Text("删除当前选中的模型？") },
+            confirmButton = {
+                Button(onClick = {
+                    onDeleteModel(modelId)
+                    deleteDialogModelId = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { deleteDialogModelId = null }) { Text("取消") }
+            }
+        )
     }
 }
 
 @Composable
 private fun FlatImageWorkspace(
-    imageLoadState: ImageLoadState,
     imageBitmap: Bitmap?,
     imageScale: Float,
     imageOffsetX: Float,
     imageOffsetY: Float,
     imageRotation: Float,
-    onImportImage: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
@@ -235,20 +274,6 @@ private fun FlatImageWorkspace(
                 contentScale = ContentScale.Crop,
                 alignment = Alignment.Center
             )
-        } else {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                when (imageLoadState) {
-                    ImageLoadState.Empty -> Text("导入图片开始编辑", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    ImageLoadState.Loading -> Text("正在载入图片…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    is ImageLoadState.Failure -> Text(imageLoadState.message, color = MaterialTheme.colorScheme.error)
-                    is ImageLoadState.Success -> Unit
-                }
-                OutlinedButton(onClick = onImportImage) { Text("选择图片") }
-            }
         }
     }
 }
@@ -275,13 +300,7 @@ private fun FlatGestureLayer(
 @Composable
 private fun FlatImagePanel(
     modifier: Modifier,
-    hasImage: Boolean,
-    onEnterModels: () -> Unit,
-    onImportImage: () -> Unit,
-    onRemoveImage: () -> Unit,
-    onExportPng: () -> Unit,
-    onExportGlb: () -> Unit,
-    hasExportContent: Boolean
+    onEnterModels: () -> Unit
 ) {
     Surface(
         modifier = modifier,
@@ -293,55 +312,74 @@ private fun FlatImagePanel(
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.Start
         ) {
             OutlinedButton(onClick = onEnterModels) { Text("模型") }
-            PanelMenuButton(
-                onImportImage = onImportImage,
-                onRemoveImage = onRemoveImage,
-                onExportPng = onExportPng,
-                onExportGlb = onExportGlb,
-                hasImage = hasImage,
-                hasExportContent = hasExportContent
-            )
         }
     }
 }
 
 @Composable
-private fun PanelMenuButton(
+private fun PreviewToolbar(
+    modifier: Modifier,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    hasImage: Boolean,
+    hasExportContent: Boolean,
+    isModelWorkspace: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onImportImage: () -> Unit,
+    onImportGlb: () -> Unit,
     onRemoveImage: () -> Unit,
     onExportPng: () -> Unit,
     onExportGlb: () -> Unit,
-    hasImage: Boolean,
-    hasExportContent: Boolean
+    onEnterModels: () -> Unit,
+    onReturnToImage: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { expanded = true }) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
-        androidx.compose.material3.DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            androidx.compose.material3.DropdownMenuItem(
-                text = { Text(if (hasImage) "更换图片" else "导入图片") },
-                onClick = { expanded = false; onImportImage() }
-            )
-            if (hasImage) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("移除图片") },
-                    onClick = { expanded = false; onRemoveImage() }
-                )
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onUndo, enabled = canUndo) {
+            Text("↶", style = MaterialTheme.typography.headlineSmall)
+        }
+        IconButton(onClick = onRedo, enabled = canRedo) {
+            Text("↪", style = MaterialTheme.typography.headlineSmall)
+        }
+        Box {
+            IconButton(onClick = { expanded = true }) {
+                Text("⋮", style = MaterialTheme.typography.titleLarge)
             }
-            if (hasExportContent) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("导出 PNG") },
-                    onClick = { expanded = false; onExportPng() }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (hasImage) "更换图片" else "导入图片") },
+                    onClick = { expanded = false; onImportImage() }
                 )
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("导出 GLB") },
-                    onClick = { expanded = false; onExportGlb() }
+                DropdownMenuItem(
+                    text = { Text("导入 GLB") },
+                    onClick = { expanded = false; onImportGlb() }
+                )
+                if (hasImage) {
+                    DropdownMenuItem(
+                        text = { Text("移除图片") },
+                        onClick = { expanded = false; onRemoveImage() }
+                    )
+                }
+                if (hasExportContent) {
+                    DropdownMenuItem(
+                        text = { Text("导出 PNG") },
+                        onClick = { expanded = false; onExportPng() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出 GLB") },
+                        onClick = { expanded = false; onExportGlb() }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text(if (isModelWorkspace) "图片编辑" else "模型工作区") },
+                    onClick = {
+                        expanded = false
+                        if (isModelWorkspace) onReturnToImage() else onEnterModels()
+                    }
                 )
             }
         }
@@ -351,17 +389,10 @@ private fun PanelMenuButton(
 @Composable
 private fun ModelWorkbench(
     modifier: Modifier,
-    hasImage: Boolean,
-    hasExportContent: Boolean,
-    onImportImage: () -> Unit,
-    onRemoveImage: () -> Unit,
-    onExportPng: () -> Unit,
-    onExportGlb: () -> Unit,
     selectedModelType: String,
     pointInput: String,
     selectedObjectId: Long?,
     selectedTransform: ModelTransformUi,
-    canUndo: Boolean,
     rendererReady: Boolean,
     rendererError: String?,
     onModelTypeSelect: (String) -> Unit,
@@ -369,9 +400,7 @@ private fun ModelWorkbench(
     onGenerateModel: () -> Unit,
     onModelTransformChange: (String, Float) -> Unit,
     onModelTransformFinish: () -> Unit,
-    onDefaultModel: () -> Unit,
-    onUndo: () -> Unit,
-    onReturnToImage: () -> Unit
+    onDefaultModel: () -> Unit
 ) {
     Surface(
         modifier = modifier,
@@ -385,30 +414,6 @@ private fun ModelWorkbench(
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("模型生成", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onUndo, enabled = canUndo) {
-                        Text("↶", style = MaterialTheme.typography.headlineSmall)
-                    }
-                    IconButton(onClick = onReturnToImage) {
-                        Text("↪", style = MaterialTheme.typography.headlineSmall)
-                    }
-                    PanelMenuButton(
-                        onImportImage = onImportImage,
-                        onRemoveImage = onRemoveImage,
-                        onExportPng = onExportPng,
-                        onExportGlb = onExportGlb,
-                        hasImage = hasImage,
-                        hasExportContent = hasExportContent
-                    )
-                }
-            }
-
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 ModelTypeChip("骰子 1", selectedModelType == MODEL_FRAGMENT) { onModelTypeSelect(MODEL_FRAGMENT) }
                 ModelTypeChip("骰子 2", selectedModelType == MODEL_CUT) { onModelTypeSelect(MODEL_CUT) }
@@ -467,6 +472,7 @@ private fun ModelWorkbench(
             ModelSlider("X 旋转", selectedTransform.rx, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rx")
             ModelSlider("Y 旋转", selectedTransform.ry, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "ry")
             ModelSlider("Z 旋转", selectedTransform.rz, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rz")
+            ModelSlider("缩放", selectedTransform.scale, 0.05f..5f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "scale")
         }
     }
 }
@@ -503,4 +509,3 @@ private fun ModelSlider(
         )
     }
 }
-

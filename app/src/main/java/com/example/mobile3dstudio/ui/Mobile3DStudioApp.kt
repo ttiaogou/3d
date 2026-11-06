@@ -21,18 +21,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.exifinterface.media.ExifInterface
 import com.example.mobile3dstudio.core.model.NativeModelKind
+import com.example.mobile3dstudio.core.model.NativeProjectSnapshot
+import com.example.mobile3dstudio.core.model.NativeProjectStore
 import com.example.mobile3dstudio.core.model.NativeSceneStateHolder
+import com.example.mobile3dstudio.core.model.NativeTransform
 import com.example.mobile3dstudio.export.NativeGlbExporter
 import com.example.mobile3dstudio.export.NativePngExporter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 
 @Composable
@@ -44,14 +50,13 @@ fun Mobile3DStudioApp() {
     var savedImagePath by rememberSaveable { mutableStateOf<String?>(null) }
     var imageLoadState by remember { mutableStateOf<ImageLoadState>(ImageLoadState.Empty) }
     var importJob by remember { mutableStateOf<Job?>(null) }
+    var restoreComplete by remember { mutableStateOf(false) }
 
-    // Flat image transform state is independent from the model scene.
     var flatScale by rememberSaveable { mutableFloatStateOf(1f) }
     var flatOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
     var flatOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
     var flatRotation by rememberSaveable { mutableFloatStateOf(0f) }
 
-    // Native workbench UI state.
     var isModelWorkspace by rememberSaveable { mutableStateOf(false) }
     var selectedModelType by rememberSaveable { mutableStateOf(MODEL_FRAGMENT) }
     var pointInput by rememberSaveable { mutableStateOf("9") }
@@ -65,14 +70,17 @@ fun Mobile3DStudioApp() {
             z = transform.z / .35f,
             rx = transform.rx,
             ry = transform.ry,
-            rz = transform.rz
+            rz = transform.rz,
+            scale = transform.scale
         )
     } ?: ModelTransformUi()
     val canUndo = nativeScene.canUndo
+    val canRedo = nativeScene.canRedo
     var rendererReady by remember { mutableStateOf(false) }
     var rendererError by remember { mutableStateOf<String?>(null) }
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
+    var showPreviewControls by remember { mutableStateOf(true) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -83,9 +91,7 @@ fun Mobile3DStudioApp() {
                 imageLoadState = ImageLoadState.Loading
                 var importedFile: File? = null
                 try {
-                    val copiedFile = withContext(Dispatchers.IO) {
-                        copyImageToPrivateStorage(context, uri)
-                    }
+                    val copiedFile = withContext(Dispatchers.IO) { copyImageToPrivateStorage(context, uri) }
                     importedFile = copiedFile
                     val bitmap = withContext(Dispatchers.IO) { decodeImage(copiedFile) }
                     val oldPath = savedImagePath
@@ -115,6 +121,26 @@ fun Mobile3DStudioApp() {
         }
     }
 
+    val glbPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                var importedFile: File? = null
+                try {
+                    val imported = withContext(Dispatchers.IO) { copyGlbToPrivateStorage(context, uri) }
+                    importedFile = imported
+                    nativeScene.addImportedGlb(imported.absolutePath)
+                    isModelWorkspace = true
+                    snackbarHostState.showSnackbar("GLB 模型已导入")
+                } catch (error: Exception) {
+                    importedFile?.delete()
+                    snackbarHostState.showSnackbar("GLB 导入失败：${error.message ?: "文件无效"}")
+                }
+            }
+        }
+    }
+
     fun finishExportSave(uri: Uri?, typeLabel: String) {
         val file = pendingExportFile
         pendingExportFile = null
@@ -129,9 +155,7 @@ fun Mobile3DStudioApp() {
                 withContext(Dispatchers.IO) {
                     val output = context.contentResolver.openOutputStream(uri, "w")
                         ?: throw IOException("无法创建导出文件。")
-                    output.use { sink ->
-                        FileInputStream(file).use { source -> source.copyTo(sink) }
-                    }
+                    output.use { sink -> FileInputStream(file).use { source -> source.copyTo(sink) } }
                     file.delete()
                 }
                 snackbarHostState.showSnackbar("${typeLabel} 已保存")
@@ -149,21 +173,63 @@ fun Mobile3DStudioApp() {
         contract = ActivityResultContracts.CreateDocument("model/gltf-binary")
     ) { uri -> finishExportSave(uri, "GLB") }
 
-    // Restore the local image copy after activity/process recreation.
     LaunchedEffect(Unit) {
-        val path = savedImagePath
-        if (path != null) {
-            val file = File(path)
-            imageLoadState = ImageLoadState.Loading
-            imageLoadState = try {
-                val bitmap = withContext(Dispatchers.IO) { decodeImage(file) }
-                ImageLoadState.Success(bitmap)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                ImageLoadState.Failure(error.message?.takeIf(String::isNotBlank) ?: "图片读取失败。")
+        val snapshot = withContext(Dispatchers.IO) { NativeProjectStore.load(context) }
+        if (snapshot != null) {
+            savedImagePath = snapshot.imagePath
+            flatScale = snapshot.imageScale
+            flatOffsetX = snapshot.imageOffsetX
+            flatOffsetY = snapshot.imageOffsetY
+            flatRotation = snapshot.imageRotation
+            isModelWorkspace = snapshot.isModelWorkspace
+            selectedModelType = snapshot.selectedModelType
+            pointInput = snapshot.pointInput
+            nativeScene.restoreScene(snapshot.models, snapshot.selectedModelId)
+            val path = snapshot.imagePath
+            if (path != null) {
+                val file = File(path)
+                imageLoadState = ImageLoadState.Loading
+                imageLoadState = try {
+                    ImageLoadState.Success(withContext(Dispatchers.IO) { decodeImage(file) })
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    ImageLoadState.Failure(error.message?.takeIf(String::isNotBlank) ?: "图片读取失败。")
+                }
             }
         }
+        restoreComplete = true
+    }
+
+    LaunchedEffect(
+        restoreComplete,
+        savedImagePath,
+        flatScale,
+        flatOffsetX,
+        flatOffsetY,
+        flatRotation,
+        isModelWorkspace,
+        selectedModelType,
+        pointInput,
+        nativeModels,
+        selectedObjectId
+    ) {
+        if (!restoreComplete) return@LaunchedEffect
+        delay(250)
+        val snapshot = NativeProjectSnapshot(
+            imagePath = savedImagePath,
+            imageScale = flatScale,
+            imageOffsetX = flatOffsetX,
+            imageOffsetY = flatOffsetY,
+            imageRotation = flatRotation,
+            isModelWorkspace = isModelWorkspace,
+            selectedModelType = selectedModelType,
+            pointInput = pointInput,
+            models = nativeModels,
+            selectedModelId = selectedObjectId
+        )
+        runCatching { withContext(Dispatchers.IO) { NativeProjectStore.save(context, snapshot) } }
+            .onFailure { android.util.Log.e("Mobile3DStudio", "Project state save failed", it) }
     }
 
     val imageBitmap = (imageLoadState as? ImageLoadState.Success)?.bitmap
@@ -183,19 +249,21 @@ fun Mobile3DStudioApp() {
         selectedObjectId = selectedObjectId,
         selectedTransform = selectedTransform,
         canUndo = canUndo,
+        canRedo = canRedo,
         rendererReady = rendererReady,
         rendererError = rendererError,
         nativeModels = nativeModels,
         onNativeModelSelected = { id -> nativeScene.select(id) },
+        onLongPressModel = { id -> nativeScene.select(id) },
+        onDeleteModel = { id -> nativeScene.remove(id) },
         onRendererFrame = {
             if (!rendererReady) rendererReady = true
             rendererError = null
         },
         onRendererError = { message -> rendererError = message },
-        onPreviewBoundsChanged = { bounds ->
-            if (previewBounds != bounds) previewBounds = Rect(bounds)
-        },
+        onPreviewBoundsChanged = { bounds -> if (previewBounds != bounds) previewBounds = Rect(bounds) },
         onImportImage = { imagePicker.launch(arrayOf("image/*")) },
+        onImportGlb = { glbPicker.launch(arrayOf("model/gltf-binary", "application/octet-stream", "*/*")) },
         onRemoveImage = {
             savedImagePath?.let { path -> scope.launch(Dispatchers.IO) { File(path).delete() } }
             savedImagePath = null
@@ -212,12 +280,8 @@ fun Mobile3DStudioApp() {
             val safeHeight = height.coerceAtLeast(1f)
             val localX = centroidX - safeWidth / 2f
             val localY = centroidY - safeHeight / 2f
-            flatOffsetX = (
-                flatOffsetX * zoom + localX * (1f - zoom) / safeWidth + panX / safeWidth
-            ).coerceIn(-4f, 4f)
-            flatOffsetY = (
-                flatOffsetY * zoom + localY * (1f - zoom) / safeHeight + panY / safeHeight
-            ).coerceIn(-4f, 4f)
+            flatOffsetX = (flatOffsetX * zoom + localX * (1f - zoom) / safeWidth + panX / safeWidth).coerceIn(-4f, 4f)
+            flatOffsetY = (flatOffsetY * zoom + localY * (1f - zoom) / safeHeight + panY / safeHeight).coerceIn(-4f, 4f)
             flatScale = (flatScale * zoom).coerceIn(0.1f, 8f)
             flatRotation = normalizeDegrees(flatRotation + rotation)
         },
@@ -231,6 +295,7 @@ fun Mobile3DStudioApp() {
                     MODEL_FRAGMENT -> nativeScene.add(NativeModelKind.IRREGULAR_DICE, pointInput.toIntOrNull() ?: 9)
                     MODEL_CUT -> nativeScene.add(NativeModelKind.DOUBLE_CUT_DICE, pointInput.toIntOrNull() ?: 9)
                     MODEL_POKER -> nativeScene.add(NativeModelKind.POKER_CARD)
+                    else -> throw IllegalArgumentException("未知模型类型")
                 }
             }.onSuccess {
                 scope.launch { snackbarHostState.showSnackbar("原生 3D 模型已加入场景") }
@@ -239,51 +304,59 @@ fun Mobile3DStudioApp() {
             }
         },
         onModelTransformChange = { axis, value -> nativeScene.updateTransform(axis, value) },
+        onModelTransformGesture = { id, transform -> nativeScene.updateTransformFromGesture(id, transform) },
         onModelTransformFinish = { nativeScene.finishTransformEdit() },
         onDefaultModel = { nativeScene.resetSelected() },
-        onUndo = {
-            if (!nativeScene.undo()) scope.launch { snackbarHostState.showSnackbar("没有可撤销的操作") }
-        },
+        onUndo = { if (!nativeScene.undo()) scope.launch { snackbarHostState.showSnackbar("没有可撤销的操作") } },
+        onRedo = { if (!nativeScene.redo()) scope.launch { snackbarHostState.showSnackbar("没有可重做的操作") } },
         onExportPng = {
             val bounds = previewBounds?.let { Rect(it) }
             if (bounds == null || bounds.isEmpty) {
                 scope.launch { snackbarHostState.showSnackbar("预览画布尚未就绪，无法导出 PNG") }
             } else {
+                showPreviewControls = false
                 scope.launch {
-                    runCatching { NativePngExporter.export(context, bounds) }
-                        .onSuccess { file ->
-                            pendingExportFile = file
-                            savePngLauncher.launch("Mobile3DStudio-Preview.png")
-                        }
-                        .onFailure { error -> snackbarHostState.showSnackbar("PNG 导出失败：${error.message ?: "未知错误"}") }
+                    try {
+                        delay(180)
+                        val file = NativePngExporter.export(context, bounds)
+                        pendingExportFile = file
+                        savePngLauncher.launch("Mobile3DStudio-Preview.png")
+                    } catch (error: Exception) {
+                        snackbarHostState.showSnackbar("PNG 导出失败：${error.message ?: "未知错误"}")
+                    } finally {
+                        showPreviewControls = true
+                    }
                 }
             }
         },
         onExportGlb = {
-            scope.launch {
-                val bounds = previewBounds
-                val aspect = if (bounds != null && bounds.height() > 0) {
-                    bounds.width().toFloat() / bounds.height().toFloat()
-                } else 1f
-                runCatching {
-                    NativeGlbExporter.export(
-                        context = context,
-                        models = nativeModels,
-                        imageBitmap = imageBitmap,
-                        imageScale = flatScale,
-                        imageOffsetX = flatOffsetX,
-                        imageOffsetY = flatOffsetY,
-                        imageRotation = flatRotation,
-                        viewportAspectRatio = aspect
-                    )
-                }.onSuccess { file ->
-                    pendingExportFile = file
-                    saveGlbLauncher.launch("Mobile3DStudio-Scene.glb")
-                }.onFailure { error ->
-                    snackbarHostState.showSnackbar("GLB 导出失败：${error.message ?: "未知错误"}")
+            if (nativeModels.any { it.sourceFilePath != null }) {
+                scope.launch { snackbarHostState.showSnackbar("场景包含外部 GLB 模型，请保留其原始文件。") }
+            } else {
+                scope.launch {
+                    val bounds = previewBounds
+                    val aspect = if (bounds != null && bounds.height() > 0) bounds.width().toFloat() / bounds.height().toFloat() else 1f
+                    runCatching {
+                        NativeGlbExporter.export(
+                            context = context,
+                            models = nativeModels,
+                            imageBitmap = imageBitmap,
+                            imageScale = flatScale,
+                            imageOffsetX = flatOffsetX,
+                            imageOffsetY = flatOffsetY,
+                            imageRotation = flatRotation,
+                            viewportAspectRatio = aspect
+                        )
+                    }.onSuccess { file ->
+                        pendingExportFile = file
+                        saveGlbLauncher.launch("Mobile3DStudio-Scene.glb")
+                    }.onFailure { error ->
+                        snackbarHostState.showSnackbar("GLB 导出失败：${error.message ?: "未知错误"}")
+                    }
                 }
             }
-        }
+        },
+        showPreviewControls = showPreviewControls
     )
 }
 
@@ -318,8 +391,7 @@ private fun copyImageToPrivateStorage(context: Context, uri: Uri): File {
     if (!dir.exists() && !dir.mkdirs()) throw IOException("无法创建图片缓存目录。")
     val destination = File(dir, "image_${UUID.randomUUID()}.$extension")
     try {
-        val input = context.contentResolver.openInputStream(uri)
-            ?: throw IOException("系统无法读取所选图片，请重新选择。")
+        val input = context.contentResolver.openInputStream(uri) ?: throw IOException("系统无法读取所选图片，请重新选择。")
         input.use { source ->
             FileOutputStream(destination).use { output ->
                 if (source.copyTo(output) <= 0L) throw IOException("所选图片文件为空。")
@@ -331,6 +403,38 @@ private fun copyImageToPrivateStorage(context: Context, uri: Uri): File {
         destination.delete()
         if (error is IOException) throw error
         throw IOException("图片复制失败：${error.message ?: "未知错误"}", error)
+    }
+}
+
+private fun copyGlbToPrivateStorage(context: Context, uri: Uri): File {
+    val directory = File(context.filesDir, "imported-models")
+    if (!directory.exists() && !directory.mkdirs()) throw IOException("无法创建模型缓存目录。")
+    val destination = File(directory, "model_${UUID.randomUUID()}.glb")
+    try {
+        val input = context.contentResolver.openInputStream(uri) ?: throw IOException("无法读取 GLB 文件。")
+        input.use { source ->
+            FileOutputStream(destination).use { output ->
+                source.copyTo(output)
+                output.fd.sync()
+            }
+        }
+        if (destination.length() < 20L) throw IOException("GLB 文件内容不完整。")
+        FileInputStream(destination).use { inputFile ->
+            val header = ByteArray(12)
+            inputFile.readFully(header)
+            val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+            val magic = buffer.int
+            val version = buffer.int
+            val length = buffer.int
+            if (magic != 0x46546C67 || version != 2 || length != destination.length().toInt()) {
+                throw IOException("文件不是有效的 glTF 2.0 GLB。")
+            }
+        }
+        return destination
+    } catch (error: Exception) {
+        destination.delete()
+        if (error is IOException) throw error
+        throw IOException("GLB 导入失败：${error.message ?: "未知错误"}", error)
     }
 }
 
@@ -352,10 +456,7 @@ private fun decodeImage(file: File, maxDimension: Int = 2048): Bitmap {
     ) ?: throw IOException("图片解码失败，请尝试 JPG、PNG 或 WebP 格式。")
 
     val orientation = runCatching {
-        ExifInterface(file.absolutePath).getAttributeInt(
-            ExifInterface.TAG_ORIENTATION,
-            ExifInterface.ORIENTATION_NORMAL
-        )
+        ExifInterface(file.absolutePath).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
     }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
     val matrix = Matrix()
     when (orientation) {
