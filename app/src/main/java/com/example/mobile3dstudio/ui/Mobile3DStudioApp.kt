@@ -83,6 +83,19 @@ fun Mobile3DStudioApp() {
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
     var showPreviewControls by remember { mutableStateOf(true) }
 
+    fun attachModelToCurrentBackground(modelId: Long) {
+        val bounds = previewBounds
+        nativeScene.attachNewModelToBackground(
+            id = modelId,
+            imageScale = flatScale,
+            imageOffsetX = flatOffsetX,
+            imageOffsetY = flatOffsetY,
+            imageRotation = flatRotation,
+            viewportWidth = bounds?.width()?.toFloat() ?: 1f,
+            viewportHeight = bounds?.height()?.toFloat() ?: 1f
+        )
+    }
+
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -96,6 +109,19 @@ fun Mobile3DStudioApp() {
                     importedFile = copiedFile
                     val bitmap = withContext(Dispatchers.IO) { decodeImage(copiedFile) }
                     val oldPath = savedImagePath
+                    nativeScene.followBackgroundTransform(
+                        oldScale = flatScale,
+                        oldOffsetX = flatOffsetX,
+                        oldOffsetY = flatOffsetY,
+                        oldRotation = flatRotation,
+                        newScale = 1f,
+                        newOffsetX = 0f,
+                        newOffsetY = 0f,
+                        newRotation = 0f,
+                        viewportWidth = previewBounds?.width()?.toFloat() ?: 1f,
+                        viewportHeight = previewBounds?.height()?.toFloat() ?: 1f
+                    )
+                    nativeScene.finishTransformEdit()
                     savedImagePath = copiedFile.absolutePath
                     imageLoadState = ImageLoadState.Success(bitmap)
                     isModelWorkspace = false
@@ -131,7 +157,8 @@ fun Mobile3DStudioApp() {
                 try {
                     val imported = withContext(Dispatchers.IO) { copyGlbToPrivateStorage(context, uri) }
                     importedFile = imported
-                    nativeScene.addImportedGlb(imported.absolutePath)
+                    val model = nativeScene.addImportedGlb(imported.absolutePath)
+                    attachModelToCurrentBackground(model.id)
                     isModelWorkspace = true
                     snackbarHostState.showSnackbar("GLB 模型已导入")
                 } catch (error: Exception) {
@@ -281,10 +308,41 @@ fun Mobile3DStudioApp() {
             val safeHeight = height.coerceAtLeast(1f)
             val localX = centroidX - safeWidth / 2f
             val localY = centroidY - safeHeight / 2f
-            flatOffsetX = (flatOffsetX * zoom + localX * (1f - zoom) / safeWidth + panX / safeWidth).coerceIn(-4f, 4f)
-            flatOffsetY = (flatOffsetY * zoom + localY * (1f - zoom) / safeHeight + panY / safeHeight).coerceIn(-4f, 4f)
-            flatScale = (flatScale * zoom).coerceIn(0.1f, 8f)
-            flatRotation = normalizeDegrees(flatRotation + rotation)
+            val oldScale = flatScale
+            val oldOffsetX = flatOffsetX
+            val oldOffsetY = flatOffsetY
+            val oldRotation = flatRotation
+            val nextScale = (oldScale * zoom).coerceIn(0.1f, 8f)
+            val effectiveZoom = nextScale / oldScale.coerceAtLeast(0.1f)
+            val deltaRadians = Math.toRadians(rotation.toDouble())
+            val scaledCos = effectiveZoom * kotlin.math.cos(deltaRadians).toFloat()
+            val scaledSin = effectiveZoom * kotlin.math.sin(deltaRadians).toFloat()
+            val oldOffsetPxX = oldOffsetX * safeWidth
+            val oldOffsetPxY = oldOffsetY * safeHeight
+            val nextOffsetPxX = panX + scaledCos * oldOffsetPxX - scaledSin * oldOffsetPxY +
+                (1f - scaledCos) * localX + scaledSin * localY
+            val nextOffsetPxY = panY + scaledSin * oldOffsetPxX + scaledCos * oldOffsetPxY -
+                scaledSin * localX + (1f - scaledCos) * localY
+            val nextOffsetX = (nextOffsetPxX / safeWidth).coerceIn(-4f, 4f)
+            val nextOffsetY = (nextOffsetPxY / safeHeight).coerceIn(-4f, 4f)
+            val nextRotation = normalizeDegrees(oldRotation + rotation)
+
+            nativeScene.followBackgroundTransform(
+                oldScale = oldScale,
+                oldOffsetX = oldOffsetX,
+                oldOffsetY = oldOffsetY,
+                oldRotation = oldRotation,
+                newScale = nextScale,
+                newOffsetX = nextOffsetX,
+                newOffsetY = nextOffsetY,
+                newRotation = nextRotation,
+                viewportWidth = safeWidth,
+                viewportHeight = safeHeight
+            )
+            flatOffsetX = nextOffsetX
+            flatOffsetY = nextOffsetY
+            flatScale = nextScale
+            flatRotation = nextRotation
         },
         onEnterModels = { isModelWorkspace = true },
         onReturnToImage = { isModelWorkspace = false },
@@ -292,19 +350,20 @@ fun Mobile3DStudioApp() {
         onPointInputChange = { pointInput = it },
         onGenerateModel = {
             runCatching {
-                when (selectedModelType) {
+                val model = when (selectedModelType) {
                     MODEL_FRAGMENT -> nativeScene.add(NativeModelKind.IRREGULAR_DICE, pointInput.toIntOrNull() ?: 9)
                     MODEL_CUT -> nativeScene.add(NativeModelKind.DOUBLE_CUT_DICE, pointInput.toIntOrNull() ?: 9)
                     MODEL_POKER -> nativeScene.add(NativeModelKind.POKER_CARD)
                     else -> throw IllegalArgumentException("未知模型类型")
                 }
+                attachModelToCurrentBackground(model.id)
             }.onSuccess {
                 scope.launch { snackbarHostState.showSnackbar("原生 3D 模型已加入场景") }
             }.onFailure { error ->
                 scope.launch { snackbarHostState.showSnackbar(error.message ?: "模型生成失败") }
             }
         },
-        onModelTransformChange = { axis, value -> nativeScene.updateTransform(axis, value) },
+        onModelTransformChange = { axis, delta -> nativeScene.adjustTransformByDelta(axis, delta) },
         onModelTransformGesture = { id, transform -> nativeScene.updateTransformFromGesture(id, transform) },
         onModelTransformFinish = { nativeScene.finishTransformEdit() },
         onDefaultModel = { nativeScene.resetSelected() },

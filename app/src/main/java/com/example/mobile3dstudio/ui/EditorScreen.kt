@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,16 +32,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -162,17 +160,13 @@ fun EditorScreen(
                     },
                     onModelTransform = { id, transform -> onModelTransformGesture(id, transform) },
                     onModelTransformFinished = onModelTransformFinish,
+                    backgroundEnabled = imageBitmap != null,
+                    onBackgroundGesture = onFlatGesture,
+                    onBackgroundGestureFinished = onModelTransformFinish,
                     onRendererFrame = onRendererFrame,
                     onRendererError = onRendererError
                 )
 
-                if (!isModelWorkspace && imageBitmap != null && nativeModels.isEmpty()) {
-                    FlatGestureLayer(
-                        imageBitmap = imageBitmap,
-                        onFlatGesture = onFlatGesture,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
 
                 if (showPreviewControls) {
                     if (imageBitmap == null) {
@@ -276,25 +270,6 @@ private fun FlatImageWorkspace(
             )
         }
     }
-}
-
-@Composable
-private fun FlatGestureLayer(
-    imageBitmap: Bitmap,
-    onFlatGesture: (Float, Float, Float, Float, Float, Float, Float, Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val latestGesture by rememberUpdatedState(onFlatGesture)
-    Box(
-        modifier = modifier.pointerInput(imageBitmap) {
-            detectTransformGestures { centroid, pan, zoom, rotation ->
-                latestGesture(
-                    centroid.x, centroid.y, pan.x, pan.y, zoom, rotation,
-                    size.width.toFloat(), size.height.toFloat()
-                )
-            }
-        }
-    )
 }
 
 @Composable
@@ -464,15 +439,15 @@ private fun ModelWorkbench(
                 Text("XYZ 移动", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(onClick = onDefaultModel, enabled = selectedObjectId != null) { Text("默认") }
             }
-            ModelSlider("X 移动", selectedTransform.x, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "x")
-            ModelSlider("Y 移动", selectedTransform.y, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "y")
-            ModelSlider("Z 移动", selectedTransform.z, -2f..2f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "z")
+            ModelSlider("X 移动", selectedTransform.x, 0.16f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "x")
+            ModelSlider("Y 移动", selectedTransform.y, 0.16f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "y")
+            ModelSlider("Z 移动", selectedTransform.z, 0.12f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "z")
 
             Text("XYZ 旋转", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            ModelSlider("X 旋转", selectedTransform.rx, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rx")
-            ModelSlider("Y 旋转", selectedTransform.ry, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "ry")
-            ModelSlider("Z 旋转", selectedTransform.rz, -180f..180f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rz")
-            ModelSlider("缩放", selectedTransform.scale, 0.05f..5f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "scale")
+            ModelSlider("X 旋转", selectedTransform.rx, 15f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rx")
+            ModelSlider("Y 旋转", selectedTransform.ry, 15f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "ry")
+            ModelSlider("Z 旋转", selectedTransform.rz, 15f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "rz")
+            ModelSlider("缩放", selectedTransform.scale, 0.10f, selectedObjectId != null, onModelTransformChange, onModelTransformFinish, "scale")
         }
     }
 }
@@ -486,12 +461,13 @@ private fun ModelTypeChip(title: String, selected: Boolean, onClick: () -> Unit)
 private fun ModelSlider(
     title: String,
     value: Float,
-    range: ClosedFloatingPointRange<Float>,
+    fineTuneSpan: Float,
     enabled: Boolean,
     onChange: (String, Float) -> Unit,
     onFinished: () -> Unit,
     axis: String
 ) {
+    var sliderOffset by remember(axis) { mutableFloatStateOf(0f) }
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -501,10 +477,17 @@ private fun ModelSlider(
             Text("${"%.2f".format(value)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
         }
         Slider(
-            value = value.coerceIn(range.start, range.endInclusive),
-            onValueChange = { onChange(axis, it) },
-            onValueChangeFinished = onFinished,
-            valueRange = range,
+            value = sliderOffset,
+            onValueChange = { nextOffset ->
+                val delta = nextOffset - sliderOffset
+                sliderOffset = nextOffset
+                if (delta != 0f) onChange(axis, delta * fineTuneSpan)
+            },
+            onValueChangeFinished = {
+                sliderOffset = 0f
+                onFinished()
+            },
+            valueRange = -1f..1f,
             enabled = enabled
         )
     }
