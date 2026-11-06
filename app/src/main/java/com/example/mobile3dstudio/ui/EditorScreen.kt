@@ -3,6 +3,8 @@ package com.example.mobile3dstudio.ui
 import android.graphics.Bitmap
 import android.graphics.Rect
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -35,22 +38,28 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.mobile3dstudio.core.model.NativeSceneModel
 import com.example.mobile3dstudio.core.model.NativeTransform
 import com.example.mobile3dstudio.ui.scene.NativeSceneViewport
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 const val MODEL_FRAGMENT = "fragment-dice"
 const val MODEL_CUT = "cut-dice"
@@ -112,6 +121,8 @@ fun EditorScreen(
     showPreviewControls: Boolean
 ) {
     var deleteDialogModelId by remember { mutableStateOf<Long?>(null) }
+    val latestOnFlatGesture = rememberUpdatedState(onFlatGesture)
+    val latestOnBackgroundGestureFinished = rememberUpdatedState(onModelTransformFinish)
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -167,6 +178,121 @@ fun EditorScreen(
                     onRendererError = onRendererError
                 )
 
+                // Image editing has its own Compose gesture layer. It remains independent from
+                // SceneView's model hit-testing and receives one-finger pan plus two-finger
+                // pan/zoom/rotate without changing the underlying image viewport.
+                if (imageBitmap != null && !isModelWorkspace) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(imageBitmap) {
+                                awaitEachGesture {
+                                    val firstDown = awaitFirstDown(requireUnconsumed = false)
+                                    var previousPositions = mapOf(firstDown.id to firstDown.position)
+                                    var gestureAnchorCentroid = firstDown.position
+                                    var gestureStarted = false
+                                    var gestureChanged = false
+                                    var accumulatedPanX = 0f
+                                    var accumulatedPanY = 0f
+                                    var accumulatedZoom = 1f
+                                    var accumulatedRotation = 0f
+
+                                    try {
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val pressedChanges = event.changes.filter { it.pressed }
+                                            val currentPositions = pressedChanges.associate {
+                                                it.id to it.position
+                                            }
+                                            if (currentPositions.isEmpty()) break
+
+                                            if (currentPositions.keys != previousPositions.keys) {
+                                                previousPositions = currentPositions
+                                                if (!gestureStarted) gestureAnchorCentroid = averageOffset(currentPositions.values)
+                                                accumulatedPanX = 0f
+                                                accumulatedPanY = 0f
+                                                accumulatedZoom = 1f
+                                                accumulatedRotation = 0f
+                                                continue
+                                            }
+
+                                            val previousCentroid = averageOffset(previousPositions.values)
+                                            val currentCentroid = averageOffset(currentPositions.values)
+                                            val panX = currentCentroid.x - previousCentroid.x
+                                            val panY = currentCentroid.y - previousCentroid.y
+                                            var zoom = 1f
+                                            var rotation = 0f
+                                            var previousSpan = 0f
+
+                                            if (previousPositions.size >= 2) {
+                                                val ids = previousPositions.keys.take(2)
+                                                val previousPoints = ids.mapNotNull(previousPositions::get)
+                                                val currentPoints = ids.mapNotNull(currentPositions::get)
+                                                if (previousPoints.size == 2 && currentPoints.size == 2) {
+                                                    val previousDx = previousPoints[1].x - previousPoints[0].x
+                                                    val previousDy = previousPoints[1].y - previousPoints[0].y
+                                                    val currentDx = currentPoints[1].x - currentPoints[0].x
+                                                    val currentDy = currentPoints[1].y - currentPoints[0].y
+                                                    previousSpan = sqrt(previousDx * previousDx + previousDy * previousDy)
+                                                    val currentSpan = sqrt(currentDx * currentDx + currentDy * currentDy)
+                                                    if (previousSpan > 0.001f) zoom = currentSpan / previousSpan
+                                                    rotation = Math.toDegrees(
+                                                        (atan2(currentDy, currentDx) - atan2(previousDy, previousDx)).toDouble()
+                                                    ).toFloat()
+                                                    while (rotation > 180f) rotation -= 360f
+                                                    while (rotation < -180f) rotation += 360f
+                                                }
+                                            }
+
+                                            accumulatedPanX += panX
+                                            accumulatedPanY += panY
+                                            accumulatedZoom *= zoom
+                                            accumulatedRotation += rotation
+
+                                            var justStarted = false
+                                            if (!gestureStarted) {
+                                                val panMotion = sqrt(
+                                                    accumulatedPanX * accumulatedPanX + accumulatedPanY * accumulatedPanY
+                                                )
+                                                val zoomMotion = abs(1f - accumulatedZoom) * previousSpan
+                                                val rotationMotion = abs(accumulatedRotation) * Math.PI.toFloat() / 180f * previousSpan
+                                                gestureStarted = panMotion > viewConfiguration.touchSlop ||
+                                                    zoomMotion > viewConfiguration.touchSlop ||
+                                                    rotationMotion > viewConfiguration.touchSlop
+                                                justStarted = gestureStarted
+                                            }
+
+                                            if (gestureStarted) {
+                                                val callbackCentroid = if (justStarted) gestureAnchorCentroid else previousCentroid
+                                                val callbackPanX = if (justStarted) accumulatedPanX else panX
+                                                val callbackPanY = if (justStarted) accumulatedPanY else panY
+                                                val callbackZoom = if (justStarted) accumulatedZoom else zoom
+                                                val callbackRotation = if (justStarted) accumulatedRotation else rotation
+                                                if (abs(callbackPanX) + abs(callbackPanY) > 0.001f ||
+                                                    abs(callbackZoom - 1f) > 0.00001f || abs(callbackRotation) > 0.001f) {
+                                                    latestOnFlatGesture.value(
+                                                        callbackCentroid.x,
+                                                        callbackCentroid.y,
+                                                        callbackPanX,
+                                                        callbackPanY,
+                                                        callbackZoom,
+                                                        callbackRotation,
+                                                        size.width.toFloat(),
+                                                        size.height.toFloat()
+                                                    )
+                                                    gestureChanged = true
+                                                }
+                                                pressedChanges.forEach { it.consume() }
+                                            }
+                                            previousPositions = currentPositions
+                                        } while (true)
+                                    } finally {
+                                        if (gestureChanged) latestOnBackgroundGestureFinished.value()
+                                    }
+                                }
+                            }
+                    )
+                }
 
                 if (showPreviewControls) {
                     if (imageBitmap == null) {
@@ -181,45 +307,66 @@ fun EditorScreen(
                         canRedo = canRedo,
                         hasImage = imageBitmap != null,
                         hasExportContent = hasExportContent,
-                        isModelWorkspace = isModelWorkspace,
                         onUndo = onUndo,
                         onRedo = onRedo,
                         onImportImage = onImportImage,
-                        onImportGlb = onImportGlb,
                         onRemoveImage = onRemoveImage,
                         onExportPng = onExportPng,
-                        onExportGlb = onExportGlb,
-                        onEnterModels = onEnterModels,
-                        onReturnToImage = onReturnToImage
+                        onExportGlb = onExportGlb
                     )
                 }
             }
 
-            if (isModelWorkspace) {
-                ModelWorkbench(
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.375f)
+            ) {
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.375f),
-                    selectedModelType = selectedModelType,
-                    pointInput = pointInput,
-                    selectedObjectId = selectedObjectId,
-                    selectedTransform = selectedTransform,
-                    rendererReady = rendererReady,
-                    rendererError = rendererError,
-                    onModelTypeSelect = onModelTypeSelect,
-                    onPointInputChange = onPointInputChange,
-                    onGenerateModel = onGenerateModel,
-                    onModelTransformChange = onModelTransformChange,
-                    onModelTransformFinish = onModelTransformFinish,
-                    onDefaultModel = onDefaultModel
-                )
-            } else {
-                FlatImagePanel(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(0.375f),
-                    onEnterModels = onEnterModels
-                )
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isModelWorkspace) {
+                        OutlinedButton(onClick = onReturnToImage) { Text("编辑") }
+                    } else {
+                        Button(onClick = onReturnToImage) { Text("编辑") }
+                    }
+                    if (isModelWorkspace) {
+                        Button(onClick = onEnterModels) { Text("模型") }
+                    } else {
+                        OutlinedButton(onClick = onEnterModels) { Text("模型") }
+                    }
+                }
+                HorizontalDivider()
+                if (isModelWorkspace) {
+                    ModelWorkbench(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        selectedModelType = selectedModelType,
+                        pointInput = pointInput,
+                        selectedObjectId = selectedObjectId,
+                        selectedTransform = selectedTransform,
+                        rendererReady = rendererReady,
+                        rendererError = rendererError,
+                        onModelTypeSelect = onModelTypeSelect,
+                        onPointInputChange = onPointInputChange,
+                        onGenerateModel = onGenerateModel,
+                        onImportGlb = onImportGlb,
+                        onModelTransformChange = onModelTransformChange,
+                        onModelTransformFinish = onModelTransformFinish,
+                        onDefaultModel = onDefaultModel
+                    )
+                } else {
+                    FlatImagePanel(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                }
             }
         }
     }
@@ -240,6 +387,12 @@ fun EditorScreen(
             }
         )
     }
+}
+
+private fun averageOffset(points: Collection<Offset>): Offset {
+    if (points.isEmpty()) return Offset.Zero
+    val sum = points.fold(Offset.Zero) { total, point -> total + point }
+    return sum / points.size.toFloat()
 }
 
 @Composable
@@ -273,25 +426,12 @@ private fun FlatImageWorkspace(
 }
 
 @Composable
-private fun FlatImagePanel(
-    modifier: Modifier,
-    onEnterModels: () -> Unit
-) {
+private fun FlatImagePanel(modifier: Modifier) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.Start
-        ) {
-            OutlinedButton(onClick = onEnterModels) { Text("模型") }
-        }
-    }
+    ) { Box(Modifier.fillMaxSize()) }
 }
 
 @Composable
@@ -301,16 +441,12 @@ private fun PreviewToolbar(
     canRedo: Boolean,
     hasImage: Boolean,
     hasExportContent: Boolean,
-    isModelWorkspace: Boolean,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onImportImage: () -> Unit,
-    onImportGlb: () -> Unit,
     onRemoveImage: () -> Unit,
     onExportPng: () -> Unit,
-    onExportGlb: () -> Unit,
-    onEnterModels: () -> Unit,
-    onReturnToImage: () -> Unit
+    onExportGlb: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -326,35 +462,23 @@ private fun PreviewToolbar(
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 DropdownMenuItem(
-                    text = { Text(if (hasImage) "更换图片" else "导入图片") },
+                    text = { Text("更换图片") },
                     onClick = { expanded = false; onImportImage() }
                 )
                 DropdownMenuItem(
-                    text = { Text("导入 GLB") },
-                    onClick = { expanded = false; onImportGlb() }
+                    text = { Text("移除图片") },
+                    enabled = hasImage,
+                    onClick = { expanded = false; onRemoveImage() }
                 )
-                if (hasImage) {
-                    DropdownMenuItem(
-                        text = { Text("移除图片") },
-                        onClick = { expanded = false; onRemoveImage() }
-                    )
-                }
-                if (hasExportContent) {
-                    DropdownMenuItem(
-                        text = { Text("导出 PNG") },
-                        onClick = { expanded = false; onExportPng() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("导出 GLB") },
-                        onClick = { expanded = false; onExportGlb() }
-                    )
-                }
                 DropdownMenuItem(
-                    text = { Text(if (isModelWorkspace) "图片编辑" else "模型工作区") },
-                    onClick = {
-                        expanded = false
-                        if (isModelWorkspace) onReturnToImage() else onEnterModels()
-                    }
+                    text = { Text("导出 PNG") },
+                    enabled = hasExportContent,
+                    onClick = { expanded = false; onExportPng() }
+                )
+                DropdownMenuItem(
+                    text = { Text("导出 GLB") },
+                    enabled = hasExportContent,
+                    onClick = { expanded = false; onExportGlb() }
                 )
             }
         }
@@ -373,6 +497,7 @@ private fun ModelWorkbench(
     onModelTypeSelect: (String) -> Unit,
     onPointInputChange: (String) -> Unit,
     onGenerateModel: () -> Unit,
+    onImportGlb: () -> Unit,
     onModelTransformChange: (String, Float) -> Unit,
     onModelTransformFinish: () -> Unit,
     onDefaultModel: () -> Unit
@@ -422,6 +547,7 @@ private fun ModelWorkbench(
                     onClick = onGenerateModel,
                     enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
                 ) { Text("生成模型") }
+                OutlinedButton(onClick = onImportGlb) { Text("导入 GLB") }
             }
             if (!rendererReady) {
                 Text(
