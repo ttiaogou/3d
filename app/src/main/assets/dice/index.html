@@ -17,11 +17,12 @@ input[type=range]{width:100%;accent-color:#8ee0cf;height:18px;cursor:pointer}.ra
 @media(max-width:520px){.sidebar{grid-template-columns:1fr}.panel:first-child,.sidebar .panel:last-child{grid-column:auto}.workspace{height:55dvh;min-height:330px}.top-actions .btn{padding:8px 9px}.brand-name{font-size:13px}.brand-mark{width:32px;height:32px}.rotation-grid{gap:5px}}
 
 /* Android native host mode: keep the original WebGL renderer, hide its web UI. */
-html, body { width:100%; height:100%; min-height:100%; overflow:hidden !important; margin:0; }
-.app { display:block !important; width:100%; height:100dvh !important; min-height:0 !important; background:#111722 !important; }
+html, body { width:100%; height:100%; min-height:100%; overflow:hidden !important; margin:0; background:transparent !important; }
+.app { display:block !important; width:100%; height:100dvh !important; min-height:0 !important; background:transparent !important; }
 .topbar, .sidebar, .stage-head, .bottom-hint, .selection-chip, .empty-state { display:none !important; }
 .layout { display:block !important; width:100%; height:100% !important; min-height:0 !important; padding:0 !important; margin:0 !important; }
-.workspace { position:relative; display:block; width:100%; height:100% !important; min-height:0 !important; border:0 !important; border-radius:16px !important; box-shadow:none !important; background:#151923 !important; }
+.workspace { position:relative; display:block; width:100%; height:100% !important; min-height:0 !important; border:0 !important; border-radius:16px !important; box-shadow:none !important; background:transparent !important; }
+.layout { background:transparent !important; }
 #backdrop, #stage, #overlay { max-width:100%; max-height:100%; }
 #stage { touch-action:none; }
 .toast { top:10px !important; font-size:11px !important; z-index:20 !important; }
@@ -153,7 +154,7 @@ let cardProgram=null,cardLocations=null,cardTextures=null;
 
 function shader(type,source){const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const msg=gl.getShaderInfoLog(s);gl.deleteShader(s);throw new Error(msg||'Shader compilation failed');}return s;}
 function initGL(){if(!gl){rendererError='当前设备未能创建 WebGL 上下文。';return false;}try{const vs=shader(gl.VERTEX_SHADER,VERT),fs=shader(gl.FRAGMENT_SHADER,FRAG);program=gl.createProgram();gl.attachShader(program,vs);gl.attachShader(program,fs);gl.linkProgram(program);gl.deleteShader(vs);gl.deleteShader(fs);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program)||'WebGL program link failed');locations={position:gl.getAttribLocation(program,'aPosition'),normal:gl.getAttribLocation(program,'aNormal'),uv:gl.getAttribLocation(program,'aUv'),mvp:gl.getUniformLocation(program,'uMvp'),model:gl.getUniformLocation(program,'uModel'),base:gl.getUniformLocation(program,'uBaseColor'),pip:gl.getUniformLocation(program,'uPipColor'),light:gl.getUniformLocation(program,'uLightDir'),camera:gl.getUniformLocation(program,'uCameraPos'),facePipParams:gl.getUniformLocation(program,'uFacePipParams'),pips:gl.getUniformLocation(program,'uPips[0]')};try{const cvs=shader(gl.VERTEX_SHADER,CARD_VERT),cfs=shader(gl.FRAGMENT_SHADER,CARD_FRAG);cardProgram=gl.createProgram();gl.attachShader(cardProgram,cvs);gl.attachShader(cardProgram,cfs);gl.linkProgram(cardProgram);gl.deleteShader(cvs);gl.deleteShader(cfs);if(!gl.getProgramParameter(cardProgram,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(cardProgram)||'Card shader link failed');cardLocations={position:gl.getAttribLocation(cardProgram,'aPosition'),normal:gl.getAttribLocation(cardProgram,'aNormal'),uv:gl.getAttribLocation(cardProgram,'aUv'),mvp:gl.getUniformLocation(cardProgram,'uMvp'),model:gl.getUniformLocation(cardProgram,'uModel'),texture:gl.getUniformLocation(cardProgram,'uTexture'),useTexture:gl.getUniformLocation(cardProgram,'uUseTexture'),baseColor:gl.getUniformLocation(cardProgram,'uBaseColor'),light:gl.getUniformLocation(cardProgram,'uLightDir'),camera:gl.getUniformLocation(cardProgram,'uCameraPos')};}catch(cardShaderError){console.error(cardShaderError);cardProgram=null;toast('三维扑克牌渲染初始化失败：'+cardShaderError.message);}gl.useProgram(program);gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LEQUAL);gl.disable(gl.CULL_FACE);gl.clearColor(0,0,0,0);glReady=true;return true;}catch(err){rendererError='WebGL 初始化失败：'+(err&&err.message?err.message:String(err));console.error(err);toast(rendererError);return false;}}
-function compileBuffer(data){const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);return {buffer,count:data.length/8};}
+function compileBuffer(data){const cpuData=new Float32Array(data);const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,cpuData,gl.STATIC_DRAW);return {buffer,count:data.length/8,data:cpuData};}
 function makeRoundedCardOutline(w,h){const r=Math.min(w,h)*.045,segments=8,out=[];const corners=[{x:w/2-r,y:h/2-r,a:0},{x:-w/2+r,y:h/2-r,a:90},{x:-w/2+r,y:-h/2+r,a:180},{x:w/2-r,y:-h/2+r,a:270}];for(const c of corners){for(let i=0;i<=segments;i++){const a=rad(c.a+i*90/segments);out.push({x:c.x+Math.cos(a)*r,y:c.y+Math.sin(a)*r});}}return out;}
 function makeCardMesh(card){const front=[],back=[],side=[],n=card.outline.length,t=card.thickness,zf=t/2,zb=-t/2,center={x:0,y:0,z:zf},centerBack={x:0,y:0,z:zb};for(let i=0;i<n;i++){const j=(i+1)%n,a=card.outline[i],b=card.outline[j],pa={x:a.x,y:a.y,z:zf},pb={x:b.x,y:b.y,z:zf},qa={x:a.x,y:a.y,z:zb},qb={x:b.x,y:b.y,z:zb};const uva=[a.x/card.w+.5,a.y/card.h+.5],uvb=[b.x/card.w+.5,b.y/card.h+.5];tri(front,center,pa,pb,[.5,.5],uva,uvb,false);tri(back,centerBack,qb,qa,[.5,.5],[.5-b.x/card.w,b.y/card.h+.5],[.5-a.x/card.w,a.y/card.h+.5],false);quad(side,pa,qa,qb,pb);}return {front:compileBuffer(front),back:compileBuffer(back),side:compileBuffer(side)};}
 function createTexture(source){const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,source);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);return texture;}
@@ -557,7 +558,7 @@ function makeCutDicePiece(value,x,y,size){
 }
 
 function makePiece(value,x,y){const sizeFactor=state.bg?Math.min(state.width,state.height)/600:1,size=rand(76,104)*sizeFactor,aspect=rand(.82,1.14),thickness=(Number($('thicknessRange').value)/100)*size*rand(.68,1.38);const p={id:nextId++,kind:'fragment-dice',value,x,y,z:rand(-13,13),w:size,h:size*aspect,thickness,rx:rad(rand(-32,32)),ry:rad(rand(-42,42)),rz:rad(rand(-180,180)),scale:1,color:$('pieceColor').value,faceColor:$('faceColor').value,pipColor:$('pipColor').value,pipCenters:randomShaderPipCenters(value),outline:makeOutline(size,size*aspect)};makePieceMesh(p);rememberDefaultTransform(p);return p;}
-function makeRealDicePiece(){const unit=state.bg?Math.min(state.width,state.height)/600:1,size=112*unit,count=state.pieces.filter(v=>v.kind==='real-dice').length,x=clamp(state.width*.22+((count%3)-1)*size*1.18,-state.width*.34,state.width*.34),y=clamp(-state.height*.10+Math.floor(count/3)*size*1.18,-state.height*.30,state.height*.30);const p={id:nextId++,kind:'real-dice',value:0,x,y,z:0,w:size,h:size,thickness:size,rx:rad(-24),ry:rad(-29),rz:rad(13),scale:1,color:'#f0ede4',faceColor:'#f0ede4',pipColor:'#c51f32',outline:makeRealDiceOutline(size)};makePieceMesh(p);return p;}
+function makeRealDicePiece(){const unit=state.bg?Math.min(state.width,state.height)/600:1,size=112*unit,count=state.pieces.filter(v=>v.kind==='real-dice').length,x=clamp(state.width*.22+((count%3)-1)*size*1.18,-state.width*.34,state.width*.34),y=clamp(-state.height*.10+Math.floor(count/3)*size*1.18,-state.height*.30,state.height*.30);const p={id:nextId++,kind:'real-dice',value:0,x,y,z:0,w:size,h:size,thickness:size,rx:rad(-24),ry:rad(-29),rz:rad(13),scale:1,color:'#f0ede4',faceColor:'#f0ede4',pipColor:'#c51f32',outline:makeRealDiceOutline(size)};makePieceMesh(p);rememberDefaultTransform(p);return p;}
 
 function multiply(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o;}
 function perspective(fov,aspect,near,far){const f=1/Math.tan(fov/2),o=new Float32Array(16);o[0]=f/aspect;o[5]=f;o[10]=(far+near)/(near-far);o[11]=-1;o[14]=(2*far*near)/(near-far);return o;}
@@ -572,7 +573,7 @@ function convexHull(points){const p=points.filter(Boolean).sort((a,b)=>a.x-b.x||
 function pointInPoly(point,poly){if(!poly||poly.length<3)return false;let inside=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const a=poly[i],b=poly[j];if(((a.y>point.y)!==(b.y>point.y))&&(point.x<(b.x-a.x)*(point.y-a.y)/(b.y-a.y+1e-12)+a.x))inside=!inside;}return inside;}
 function pointNearPoly(point,poly,threshold){if(!poly||poly.length<2)return false;for(let i=0;i<poly.length;i++){const a=poly[i],b=poly[(i+1)%poly.length],dx=b.x-a.x,dy=b.y-a.y,len=dx*dx+dy*dy,t=len?clamp(((point.x-a.x)*dx+(point.y-a.y)*dy)/len,0,1):0,px=a.x+t*dx,py=a.y+t*dy;if(Math.hypot(point.x-px,point.y-py)<=threshold)return true;}return false;}
 
-function drawBackground(){const w=state.width,h=state.height;bg2d.clearRect(0,0,w,h);if(state.bg&&state.bg.complete&&state.bg.naturalWidth){const iw=state.bg.naturalWidth,ih=state.bg.naturalHeight,scale=state.bgFit==='cover'?Math.max(w/iw,h/ih):Math.min(w/iw,h/ih),dw=iw*scale,dh=ih*scale;bg2d.fillStyle='#17212b';bg2d.fillRect(0,0,w,h);bg2d.drawImage(state.bg,(w-dw)/2,(h-dh)/2,dw,dh);bg2d.fillStyle='rgba(8,13,19,.12)';bg2d.fillRect(0,0,w,h);}else{const g=bg2d.createLinearGradient(0,0,w,h);g.addColorStop(0,'#26313c');g.addColorStop(.52,'#1b2630');g.addColorStop(1,'#131c26');bg2d.fillStyle=g;bg2d.fillRect(0,0,w,h);bg2d.save();bg2d.strokeStyle='rgba(213,231,238,.045)';bg2d.lineWidth=1;for(let x=0;x<w;x+=34){bg2d.beginPath();bg2d.moveTo(x,0);bg2d.lineTo(x,h);bg2d.stroke();}for(let y=0;y<h;y+=34){bg2d.beginPath();bg2d.moveTo(0,y);bg2d.lineTo(w,y);bg2d.stroke();}const glow=bg2d.createRadialGradient(w*.52,h*.45,20,w*.52,h*.45,Math.max(w,h)*.68);glow.addColorStop(0,'rgba(117,194,178,.10)');glow.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=glow;bg2d.fillRect(0,0,w,h);bg2d.restore();}}
+function drawBackground(){const w=state.width,h=state.height;bg2d.clearRect(0,0,w,h);if(window.AndroidBridge)return;if(state.bg&&state.bg.complete&&state.bg.naturalWidth){const iw=state.bg.naturalWidth,ih=state.bg.naturalHeight,scale=state.bgFit==='cover'?Math.max(w/iw,h/ih):Math.min(w/iw,h/ih),dw=iw*scale,dh=ih*scale;bg2d.fillStyle='#17212b';bg2d.fillRect(0,0,w,h);bg2d.drawImage(state.bg,(w-dw)/2,(h-dh)/2,dw,dh);bg2d.fillStyle='rgba(8,13,19,.12)';bg2d.fillRect(0,0,w,h);}else{const g=bg2d.createLinearGradient(0,0,w,h);g.addColorStop(0,'#26313c');g.addColorStop(.52,'#1b2630');g.addColorStop(1,'#131c26');bg2d.fillStyle=g;bg2d.fillRect(0,0,w,h);bg2d.save();bg2d.strokeStyle='rgba(213,231,238,.045)';bg2d.lineWidth=1;for(let x=0;x<w;x+=34){bg2d.beginPath();bg2d.moveTo(x,0);bg2d.lineTo(x,h);bg2d.stroke();}for(let y=0;y<h;y+=34){bg2d.beginPath();bg2d.moveTo(0,y);bg2d.lineTo(w,y);bg2d.stroke();}const glow=bg2d.createRadialGradient(w*.52,h*.45,20,w*.52,h*.45,Math.max(w,h)*.68);glow.addColorStop(0,'rgba(117,194,178,.10)');glow.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=glow;bg2d.fillRect(0,0,w,h);bg2d.restore();}}
 function drawShadows(){for(const p of state.pieces){const x=state.width/2+p.x+8,y=state.height/2+p.y+p.h*.31+p.thickness*.25,r=Math.max(p.w,p.h)*.72;bg2d.save();bg2d.translate(x,y);bg2d.scale(1,.48);const g=bg2d.createRadialGradient(0,0,2,0,0,r);g.addColorStop(0,'rgba(0,0,0,.32)');g.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=g;bg2d.beginPath();bg2d.arc(0,0,r,0,Math.PI*2);bg2d.fill();bg2d.restore();}if(state.card){const c=state.card;bg2d.save();bg2d.translate(state.width/2+c.x+7,state.height/2+c.y+c.h*.12+10);bg2d.rotate(c.rz);bg2d.scale(1,.42);const r=Math.max(c.w,c.h)*.60,g=bg2d.createRadialGradient(0,0,2,0,0,r);g.addColorStop(0,'rgba(0,0,0,.27)');g.addColorStop(1,'rgba(0,0,0,0)');bg2d.fillStyle=g;bg2d.beginPath();bg2d.ellipse(0,0,c.w*.48,c.h*.42,0,0,Math.PI*2);bg2d.fill();bg2d.restore();}}
 function drawOverlay(){over2d.clearRect(0,0,state.width,state.height);const h=state.hitTargets.find(v=>v.id===state.selected);if(h&&h.hull.length){over2d.save();over2d.beginPath();over2d.moveTo(h.hull[0].x,h.hull[0].y);for(let i=1;i<h.hull.length;i++)over2d.lineTo(h.hull[i].x,h.hull[i].y);over2d.closePath();over2d.strokeStyle='rgba(169,241,222,.92)';over2d.lineWidth=1.6;over2d.setLineDash([5,4]);over2d.shadowColor='#66d5bc';over2d.shadowBlur=8;over2d.stroke();over2d.restore();}if(state.card&&state.card.selected&&state.cardHit&&state.cardHit.hull.length>=3){const q=state.cardHit.hull;over2d.save();over2d.beginPath();over2d.moveTo(q[0].x,q[0].y);for(let i=1;i<q.length;i++)over2d.lineTo(q[i].x,q[i].y);over2d.closePath();over2d.strokeStyle='#8ee0cf';over2d.lineWidth=2;over2d.setLineDash([7,5]);over2d.shadowColor='#66d5bc';over2d.shadowBlur=8;over2d.stroke();over2d.restore();}}
 function render(){if(!glReady||!state.width||!state.height)return;const {vp,dist}=currentVP();gl.viewport(0,0,canvas.width,canvas.height);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(program);state.hitTargets=[];state.cardHit=null;for(const p of state.pieces){const model=modelMatrix(p),mvp=multiply(vp,model);if(p.kind==='real-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else if(p.kind==='cut-dice'){drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.cut,mvp,model,false,dist,'#b7aa92');drawMesh(p,p.mesh.red,mvp,model,false,dist,p.pipColor);}else{drawMesh(p,p.mesh.solid,mvp,model,false,dist);drawMesh(p,p.mesh.front,mvp,model,true,dist);}const worldPts=p.hitLocal.map(q=>matPoint(model,q)),screenPts=worldPts.map(q=>projectPoint(q,vp)),hull=convexHull(screenPts);const avgDepth=screenPts.reduce((s,v)=>s+(v?v.z:1),0)/Math.max(1,screenPts.length);state.hitTargets.push({id:p.id,hull,depth:avgDepth});}drawCard3D(vp,dist);drawOverlay();}
@@ -691,8 +692,224 @@ function nativeResetSelected(){
   p.x=d.x;p.y=d.y;p.z=d.z;p.rx=d.rx;p.ry=d.ry;p.rz=d.rz;p.scale=1;
   draw();notifyNativeState();toast('已恢复模型默认姿态');return true;
 }
+function bytesFromDataUrl(dataUrl){
+  const match=/^data:([^;,]+)?;base64,(.*)$/s.exec(String(dataUrl||''));
+  if(!match)throw new Error('图片数据不是有效的 Base64 Data URL');
+  const binary=atob(match[2]);
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return {bytes,mimeType:match[1]||'application/octet-stream'};
+}
+function imageToPngDataUrl(image){
+  if(!image||!image.complete||!image.naturalWidth)throw new Error('模型纹理图片尚未载入完成');
+  const c=document.createElement('canvas');c.width=image.naturalWidth;c.height=image.naturalHeight;
+  c.getContext('2d').drawImage(image,0,0);
+  return c.toDataURL('image/png');
+}
+function loadImageDataUrl(dataUrl){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('预览图片解码失败'));img.src=dataUrl;
+  });
+}
+async function createNativePreviewCanvas(){
+  const width=Math.max(1,Math.round(state.width||canvas.clientWidth||1));
+  const height=Math.max(1,Math.round(state.height||canvas.clientHeight||1));
+  const output=document.createElement('canvas');output.width=width;output.height=height;
+  const ctx=output.getContext('2d');ctx.fillStyle='#171e29';ctx.fillRect(0,0,width,height);
+  let dataUrl='',transform={scale:1,offsetX:0,offsetY:0,rotation:0};
+  if(window.AndroidBridge&&typeof window.AndroidBridge.getPreviewImageDataUrl==='function'){
+    dataUrl=window.AndroidBridge.getPreviewImageDataUrl()||'';
+    try{transform=JSON.parse(window.AndroidBridge.getPreviewTransformJson()||'{}');}catch(_){transform={};}
+  }else if(state.bg&&state.bg.complete&&state.bg.naturalWidth){
+    const tmp=document.createElement('canvas');tmp.width=state.bg.naturalWidth;tmp.height=state.bg.naturalHeight;tmp.getContext('2d').drawImage(state.bg,0,0);dataUrl=tmp.toDataURL('image/png');
+  }
+  if(dataUrl){
+    const img=await loadImageDataUrl(dataUrl);
+    const scale=Math.max(width/img.naturalWidth,height/img.naturalHeight)*(Number(transform.scale)||1);
+    const drawW=img.naturalWidth*scale,drawH=img.naturalHeight*scale;
+    ctx.save();
+    ctx.translate(width*.5+(Number(transform.offsetX)||0)*width,height*.5+(Number(transform.offsetY)||0)*height);
+    ctx.rotate((Number(transform.rotation)||0)*Math.PI/180);
+    ctx.drawImage(img,-drawW*.5,-drawH*.5,drawW,drawH);
+    ctx.restore();
+    return {canvas:output,sourceDataUrl:dataUrl,transform:{scale:Number(transform.scale)||1,offsetX:Number(transform.offsetX)||0,offsetY:Number(transform.offsetY)||0,rotation:Number(transform.rotation)||0},sourceWidth:img.naturalWidth,sourceHeight:img.naturalHeight};
+  }
+  return {canvas:output,sourceDataUrl:'',transform:{scale:1,offsetX:0,offsetY:0,rotation:0},sourceWidth:0,sourceHeight:0};
+}
+function dataUrlBytes(dataUrl){
+  const parsed=bytesFromDataUrl(dataUrl);
+  return {bytes:parsed.bytes,mimeType:parsed.mimeType};
+}
+function createDimpleFaceDataUrl(piece){
+  const size=1024,c=document.createElement('canvas');c.width=size;c.height=size;
+  const ctx=c.getContext('2d');ctx.fillStyle=piece.faceColor||'#f0ede4';ctx.fillRect(0,0,size,size);
+  const count=Number(piece.value)||0,centers=(piece.pipCenters||[]).map(([x,y])=>[x+.5,y+.5]);
+  const radius=(CUT_PIP_DIAMETER[count]||.17)*.5;
+  const base=hexRgb(piece.faceColor||'#f0ede4');
+  const dark=base.map(v=>Math.round(v*255*.68));
+  const darkHex='#'+dark.map(v=>v.toString(16).padStart(2,'0')).join('');
+  const light=base.map(v=>Math.min(255,Math.round(v*255*1.08)));
+  const lightHex='#'+light.map(v=>v.toString(16).padStart(2,'0')).join('');
+  centers.forEach(([u,v])=>{
+    const x=u*size,y=(1-v)*size,r=radius*size;
+    const grad=ctx.createRadialGradient(x-r*.25,y-r*.28,r*.06,x,y,r);
+    grad.addColorStop(0,lightHex);grad.addColorStop(.38,piece.faceColor||'#f0ede4');grad.addColorStop(.78,darkHex);grad.addColorStop(1,darkHex);
+    ctx.fillStyle=grad;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='rgba(25,29,34,.17)';ctx.lineWidth=Math.max(2,size*.002);ctx.stroke();
+  });
+  return c.toDataURL('image/png');
+}
+function buildGlb(scenePreview){
+  const json={asset:{version:'2.0',generator:'Mobile3DStudio 0.3.2'},scene:0,scenes:[{name:'Mobile3DStudio Scene',nodes:[]}],nodes:[],meshes:[],materials:[],textures:[],images:[],samplers:[{magFilter:9729,minFilter:9729,wrapS:33071,wrapT:33071}],buffers:[{byteLength:0}],bufferViews:[],accessors:[],extras:{mobile3DStudio:{projectFormat:'Mobile3DStudioProject',schemaVersion:2,appVersion:'0.3.2',engine:'Dice Fragment 3D v1.4 WebGL',coordinateUnit:'meter',workspace:{width:state.width,height:state.height},selectedObjectId:state.card&&state.card.selected?state.card.id:state.selected,preview:null,objects:[]}}};
+  const chunks=[];let binaryLength=0;
+  function appendBinary(bytes){
+    const pad=(4-(binaryLength&3))&3;if(pad){chunks.push(new Uint8Array(pad));binaryLength+=pad;}
+    const offset=binaryLength;chunks.push(bytes);binaryLength+=bytes.byteLength;return offset;
+  }
+  function addImage(dataUrl,name){
+    const parsed=dataUrlBytes(dataUrl),offset=appendBinary(parsed.bytes),view=json.bufferViews.length;
+    json.bufferViews.push({buffer:0,byteOffset:offset,byteLength:parsed.bytes.byteLength});
+    const image=json.images.length;json.images.push({name,bufferView:view,mimeType:parsed.mimeType});
+    const texture=json.textures.length;json.textures.push({sampler:0,source:image});
+    return {image,texture};
+  }
+  const materialCache=new Map();
+  function addColorMaterial(color,name,roughness=.38){
+    const key=`${color}|${name}|${roughness}`;if(materialCache.has(key))return materialCache.get(key);
+    const rgb=hexRgb(color||'#cccccc'),index=json.materials.length;
+    json.materials.push({name,pbrMetallicRoughness:{baseColorFactor:[rgb[0],rgb[1],rgb[2],1],metallicFactor:.02,roughnessFactor:roughness},doubleSided:true});materialCache.set(key,index);return index;
+  }
+  function addTextureMaterial(textureIndex,name,emissive=false){
+    const key=`texture:${textureIndex}:${name}`;if(materialCache.has(key))return materialCache.get(key);
+    const material={name,pbrMetallicRoughness:{baseColorFactor:[1,1,1,1],baseColorTexture:{index:textureIndex},metallicFactor:0,roughnessFactor:.62},doubleSided:true};
+    if(emissive){material.emissiveFactor=[1,1,1];material.emissiveTexture={index:textureIndex};}
+    const index=json.materials.length;json.materials.push(material);materialCache.set(key,index);return index;
+  }
+  function addMeshPart(mesh,materialIndex,name){
+    if(!mesh||!mesh.data||!mesh.count)throw new Error(`模型网格 ${name} 缺少可导出的顶点数据`);
+    const source=mesh.data,vertexCount=mesh.count,bytes=new ArrayBuffer(source.length*4),view=new DataView(bytes);
+    let min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i<source.length;i++){
+      const stride=i%8;let value=source[i];
+      if(stride<3){value*=.01;const axis=stride;if(value<min[axis])min[axis]=value;if(value>max[axis])max[axis]=value;}
+      else if(stride===7)value=1-value;
+      view.setFloat32(i*4,value,true);
+    }
+    const offset=appendBinary(new Uint8Array(bytes)),bufferView=json.bufferViews.length;
+    json.bufferViews.push({buffer:0,byteOffset:offset,byteLength:bytes.byteLength,byteStride:32,target:34962});
+    const addAccessor=(byteOffset,type)=>{const a={bufferView,byteOffset,componentType:5126,count:vertexCount,type};if(type==='VEC3'&&byteOffset===0){a.min=min;a.max=max;}const id=json.accessors.length;json.accessors.push(a);return id;};
+    const position=addAccessor(0,'VEC3'),normal=addAccessor(12,'VEC3'),uv=addAccessor(24,'VEC2');
+    return {attributes:{POSITION:position,NORMAL:normal,TEXCOORD_0:uv},material:materialIndex,mode:4,extras:{part:name}};
+  }
+  function addObjectMesh(parts,name){
+    const primitives=parts.filter(Boolean).map(part=>addMeshPart(part.mesh,part.material,part.name));
+    const id=json.meshes.length;json.meshes.push({name,primitives});return id;
+  }
+  function addObjectNode(obj,kind){
+    const parts=[];let metadata={id:obj.id,kind,value:obj.value,transform:{x:obj.x,y:obj.y,z:obj.z,rx:obj.rx,ry:obj.ry,rz:obj.rz,scale:obj.scale},defaultTransform:obj.defaultTransform||null,geometry:{width:obj.w,height:obj.h,thickness:obj.thickness},outline:obj.outline||null,selected:obj===state.card?!!obj.selected:state.selected===obj.id};
+    if(kind==='fragment-dice'){
+      const faceTexture=addImage(createDimpleFaceDataUrl(obj),'dice-'+obj.id+'-face-pips.png');
+      parts.push({name:'body-bevel-back',mesh:obj.mesh.solid,material:addColorMaterial(obj.color,'Dice body')});
+      parts.push({name:'number-face',mesh:obj.mesh.front,material:addTextureMaterial(faceTexture.texture,'Dice top face with baked recess shading')});
+      metadata={...metadata,modelParameters:{pointCount:Number(obj.value)||0,pipDiameterRatio:CUT_PIP_DIAMETER[Number(obj.value)]||0,pipCenters:obj.pipCenters||[],outline:obj.outline||[],randomizedShape:true},geometry:{width:obj.w,height:obj.h,thickness:obj.thickness},colors:{body:obj.color,face:obj.faceColor,pips:obj.pipColor},pipCenters:obj.pipCenters||[],pipTextureImage:faceTexture.image};
+    }else if(kind==='cut-dice'){
+      parts.push({name:'remaining-body-and-top-face',mesh:obj.mesh.solid,material:addColorMaterial(obj.color,'Cut dice body')});
+      parts.push({name:'recessed-pip-surfaces',mesh:obj.mesh.red,material:addColorMaterial(obj.pipColor,'Cut dice pip recesses',.48)});
+      parts.push({name:'two-closed-cut-caps',mesh:obj.mesh.cut,material:addColorMaterial('#b7aa92','Cut surfaces',.58)});
+      metadata={...metadata,modelParameters:{pointCount:Number(obj.value)||0,pipRadius:obj.pipRadius||0,pipCenters:obj.pipCenters||[],targetCutPercent:obj.targetCutPercent,measuredCutPercent:obj.cutPercent,cutSolveMaxPercent:obj.cutSolveMaxPercent,cutPlanes:obj.cutPlanes||[],cutCalibrated:!!obj.cutCalibrated},geometry:{width:obj.w,height:obj.h,thickness:obj.thickness},colors:{body:obj.color,pips:obj.pipColor,caps:'#b7aa92'},pipCenters:obj.pipCenters||[],pipRadius:obj.pipRadius,targetCutPercent:obj.targetCutPercent,measuredCutPercent:obj.cutPercent,cutSolveMaxPercent:obj.cutSolveMaxPercent,cutPlanes:obj.cutPlanes||[]};
+    }else if(kind==='real-dice'){
+      parts.push({name:'six-sided-rounded-dice-body',mesh:obj.mesh.solid,material:addColorMaterial(obj.color,'Real dice body',.3)});
+      parts.push({name:'geometric-pip-recesses',mesh:obj.mesh.red,material:addColorMaterial(obj.pipColor,'Pip recesses',.42)});
+      metadata={...metadata,modelParameters:{kind:'six-sided-rounded-dice',pipLayout:REAL_DICE_PIP_LAYOUTS},geometry:{width:obj.w,height:obj.h,thickness:obj.thickness},colors:{body:obj.color,pips:obj.pipColor}};
+    }else if(kind==='poker'){
+      const front=addImage(imageToPngDataUrl(pokerFrontImage),'queen-spades-front.png');
+      const back=addImage(imageToPngDataUrl(pokerBackImage),'playing-card-back.png');
+      parts.push({name:'front-face',mesh:obj.mesh.front,material:addTextureMaterial(front.texture,'Queen of Spades front')});
+      parts.push({name:'back-face',mesh:obj.mesh.back,material:addTextureMaterial(back.texture,'Playing card back')});
+      parts.push({name:'paper-edge',mesh:obj.mesh.side,material:addColorMaterial('#e4dfd2','Card edge',.76)});
+      metadata={...metadata,modelParameters:{cardRank:'Q',cardSuit:'spades',frontTextureImage:front.image,backTextureImage:back.image,roundedCornerRadius:Math.min(obj.w,obj.h)*.045,outline:obj.outline||[]},geometry:{width:obj.w,height:obj.h,thickness:obj.thickness},frontImage:front.image,backImage:back.image,frontTexture:front.texture,backTexture:back.texture};
+    }
+    const nodeMatrix=Array.from(modelMatrix(obj));nodeMatrix[12]*=.01;nodeMatrix[13]*=.01;nodeMatrix[14]*=.01;
+    const meshIndex=addObjectMesh(parts,`${kind}-${obj.id}`),nodeIndex=json.nodes.length;
+    json.nodes.push({name:kind==='poker'?`Queen of Spades #${obj.id}`:`${kind} #${obj.id}`,mesh:meshIndex,matrix:nodeMatrix,extras:{mobile3DStudio:metadata}});
+    json.scenes[0].nodes.push(nodeIndex);json.extras.mobile3DStudio.objects.push(metadata);
+  }
+  function addPreviewPlane(preview){
+    if(!preview||!preview.canvas||!preview.sourceDataUrl)return;
+    if(preview.sourceDataUrl){
+      const source=addImage(preview.sourceDataUrl,'original-imported-preview-image');
+      json.extras.mobile3DStudio.preview={kind:'editable-flat-image',isEditable:true,sourceImage:source.image,sourceTexture:source.texture,transform:preview.transform,sourceWidth:preview.sourceWidth,sourceHeight:preview.sourceHeight,displayMode:'cover'};
+    }else json.extras.mobile3DStudio.preview={transform:preview.transform,sourceWidth:0,sourceHeight:0};
+    const rendered=addImage(preview.canvas.toDataURL('image/png'),'rendered-workspace-preview.png');
+    const material=addTextureMaterial(rendered.texture,'Workspace preview image',true);
+    const w=preview.canvas.width*.01,h=preview.canvas.height*.01,z=-1.8;
+    const data=new Float32Array([
+      -w/2,-h/2,z, 0,0,1, 0,1,
+       w/2,-h/2,z, 0,0,1, 1,1,
+       w/2, h/2,z, 0,0,1, 1,0,
+      -w/2,-h/2,z, 0,0,1, 0,1,
+       w/2, h/2,z, 0,0,1, 1,0,
+      -w/2, h/2,z, 0,0,1, 0,0
+    ]);
+    const fakeMesh={data,count:6};
+    const nodeMesh=addObjectMesh([{mesh:fakeMesh,material,name:'preview-image-plane'}],'Workspace Preview');
+    const node=json.nodes.length;json.nodes.push({name:'Workspace Preview Image',mesh:nodeMesh,extras:{mobile3DStudio:{kind:'preview-image',isEditableImage:true,transform:preview.transform,sourceImage:json.extras.mobile3DStudio.preview.sourceImage??null}}});
+    json.scenes[0].nodes.push(node);
+    json.extras.mobile3DStudio.preview.renderedImage=rendered.image;
+    json.extras.mobile3DStudio.preview.renderedTexture=rendered.texture;
+    json.extras.mobile3DStudio.preview.viewport={width:preview.canvas.width,height:preview.canvas.height};
+  }
+  state.pieces.forEach(piece=>addObjectNode(piece,piece.kind));
+  if(state.card)addObjectNode(state.card,'poker');
+  addPreviewPlane(scenePreview);
+  let binLength=binaryLength;const pad=(4-(binLength&3))&3;if(pad){chunks.push(new Uint8Array(pad));binaryLength+=pad;}
+  json.buffers[0].byteLength=binaryLength;
+  const binary=new Uint8Array(binaryLength);let cursor=0;for(const chunk of chunks){binary.set(chunk,cursor);cursor+=chunk.byteLength;}
+  const jsonBytes=new TextEncoder().encode(JSON.stringify(json));const jsonPad=(4-(jsonBytes.byteLength&3))&3;const jsonChunk=new Uint8Array(jsonBytes.byteLength+jsonPad);jsonChunk.fill(0x20);jsonChunk.set(jsonBytes);
+  const totalLength=12+8+jsonChunk.byteLength+8+binary.byteLength,out=new Uint8Array(totalLength),dv=new DataView(out.buffer);
+  dv.setUint32(0,0x46546c67,true);dv.setUint32(4,2,true);dv.setUint32(8,totalLength,true);
+  dv.setUint32(12,jsonChunk.byteLength,true);dv.setUint32(16,0x4e4f534a,true);out.set(jsonChunk,20);
+  const binHeader=20+jsonChunk.byteLength;dv.setUint32(binHeader,binary.byteLength,true);dv.setUint32(binHeader+4,0x004e4942,true);out.set(binary,binHeader+8);
+  return out;
+}
+function bytesToBase64(bytes){
+  let binary='';const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode.apply(null,bytes.subarray(i,Math.min(i+chunk,bytes.length)));
+  return btoa(binary);
+}
+async function sendExportBytes(type,fileName,bytes){
+  if(window.AndroidBridge&&typeof window.AndroidBridge.beginExport==='function'){
+    if(!window.AndroidBridge.beginExport(type,fileName))throw new Error('Android 未能创建导出缓存文件');
+    try{
+      const base64=bytesToBase64(bytes),chunkSize=256*1024;
+      for(let i=0;i<base64.length;i+=chunkSize){
+        if(!window.AndroidBridge.writeExportChunk(base64.slice(i,i+chunkSize)))throw new Error('导出数据写入失败');
+      }
+      window.AndroidBridge.finishExport(true,'');
+    }catch(error){window.AndroidBridge.finishExport(false,error.message||'写入导出文件失败');throw error;}
+    return true;
+  }
+  const blob=new Blob([bytes],{type:type==='glb'?'model/gltf-binary':'image/png'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=fileName;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);return true;
+}
+async function exportPng(){
+  const preview=await createNativePreviewCanvas(),out=document.createElement('canvas');out.width=preview.canvas.width;out.height=preview.canvas.height;
+  const ctx=out.getContext('2d');ctx.drawImage(preview.canvas,0,0,out.width,out.height);ctx.drawImage(backdrop,0,0,out.width,out.height);ctx.drawImage(canvas,0,0,out.width,out.height);
+  const bytes=dataUrlBytes(out.toDataURL('image/png')).bytes;
+  await sendExportBytes('png',`Mobile3DStudio-Preview-${Date.now()}.png`,bytes);toast('PNG 导出完成');return true;
+}
+async function exportGlb(){
+  if(!glReady)throw new Error(rendererError||'WebGL 尚未就绪');
+  const preview=await createNativePreviewCanvas();
+  if(!state.pieces.length&&!state.card&&!preview.sourceDataUrl)throw new Error('当前场景没有图片或 3D 模型，无法导出 GLB');
+  const bytes=buildGlb(preview);
+  await sendExportBytes('glb',`Mobile3DStudio-Scene-${Date.now()}.glb`,bytes);toast('GLB 场景导出完成');return true;
+}
+
 window.Mobile3DStudio={
   ready:()=>!!glReady,
+  exportPng:()=>exportPng().catch(error=>{toast('PNG 导出失败：'+(error&&error.message?error.message:'未知错误'));throw error;}),
+  exportGlb:()=>exportGlb().catch(error=>{toast('GLB 导出失败：'+(error&&error.message?error.message:'未知错误'));throw error;}),
   addIrregularDice:value=>{
     const n=Number(value);if(!Number.isInteger(n)||n<0||n>9)return false;if(!glReady)return false;
     pushUndoState();
