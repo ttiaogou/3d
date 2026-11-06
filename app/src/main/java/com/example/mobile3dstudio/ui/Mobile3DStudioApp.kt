@@ -319,7 +319,15 @@ fun Mobile3DStudioApp() {
                 scope.launch {
                     try {
                         delay(180)
-                        val file = NativePngExporter.export(context, bounds)
+                        val file = NativePngExporter.export(
+                            context = context,
+                            previewBoundsInWindow = bounds,
+                            imageBitmap = imageBitmap,
+                            imageScale = flatScale,
+                            imageOffsetX = flatOffsetX,
+                            imageOffsetY = flatOffsetY,
+                            imageRotation = flatRotation
+                        )
                         pendingExportFile = file
                         savePngLauncher.launch("Mobile3DStudio-Preview.png")
                     } catch (error: Exception) {
