@@ -63,7 +63,7 @@ data class SceneObjectUi(
         get() = when (kind) {
             MODEL_FRAGMENT -> "骰子1 · ${value}点 · #$id"
             MODEL_CUT -> "骰子2 · ${value}点 · ${cutPercent?.let { "${it.toInt()}% · " } ?: ""}#$id"
-            MODEL_POKER -> "红桃Q · #$id"
+            MODEL_POKER -> "黑桃Q · #$id"
             else -> "模型 #$id"
         }
 }
@@ -94,6 +94,8 @@ fun EditorScreen(
     selectedTransform: ModelTransformUi,
     canUndo: Boolean,
     rendererReady: Boolean,
+    rendererError: String?,
+    onEngineMessage: (Boolean, String) -> Unit,
     onWebViewReady: (WebView) -> Unit,
     onSceneState: (String) -> Unit,
     onImportImage: () -> Unit,
@@ -136,7 +138,8 @@ fun EditorScreen(
                         .fillMaxSize()
                         .alpha(if (isModelWorkspace) 1f else 0.001f),
                     onWebViewReady = onWebViewReady,
-                    onSceneState = onSceneState
+                    onSceneState = onSceneState,
+                    onCommandResult = onEngineMessage
                 )
 
                 if (!isModelWorkspace) {
@@ -171,6 +174,7 @@ fun EditorScreen(
                     selectedTransform = selectedTransform,
                     canUndo = canUndo,
                     rendererReady = rendererReady,
+                    rendererError = rendererError,
                     onModelTypeSelect = onModelTypeSelect,
                     onPointInputChange = onPointInputChange,
                     onGenerateModel = onGenerateModel,
@@ -356,6 +360,7 @@ private fun ModelWorkbench(
     selectedTransform: ModelTransformUi,
     canUndo: Boolean,
     rendererReady: Boolean,
+    rendererError: String?,
     onModelTypeSelect: (String) -> Unit,
     onPointInputChange: (String) -> Unit,
     onGenerateModel: () -> Unit,
@@ -427,16 +432,20 @@ private fun ModelWorkbench(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("红桃 Q", modifier = Modifier.padding(horizontal = 12.dp, vertical = 17.dp))
+                        Text("黑桃 Q", modifier = Modifier.padding(horizontal = 12.dp, vertical = 17.dp))
                     }
                 }
                 Button(
                     onClick = onGenerateModel,
-                    enabled = rendererReady && (selectedModelType == MODEL_POKER || pointInput.isNotBlank())
+                    enabled = selectedModelType == MODEL_POKER || pointInput.isNotBlank()
                 ) { Text("生成模型") }
             }
             if (!rendererReady) {
-                Text("3D 渲染器初始化中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    rendererError ?: "3D 渲染器初始化中…点击生成会显示当前状态。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             if (sceneObjects.isNotEmpty()) {

@@ -53,6 +53,7 @@ fun Mobile3DStudioApp() {
     var pointInput by rememberSaveable { mutableStateOf("9") }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var rendererReady by remember { mutableStateOf(false) }
+    var rendererError by remember { mutableStateOf<String?>(null) }
     var sceneObjects by remember { mutableStateOf<List<SceneObjectUi>>(emptyList()) }
     var selectedObjectId by remember { mutableStateOf<Long?>(null) }
     var selectedTransform by remember { mutableStateOf(ModelTransformUi()) }
@@ -118,9 +119,33 @@ fun Mobile3DStudioApp() {
 
     fun runJs(script: String) {
         val target = webView ?: run {
-            scope.launch { snackbarHostState.showSnackbar("3D 渲染器尚未准备好") }
+            scope.launch { snackbarHostState.showSnackbar("3D 渲染器视图尚未创建，请重新进入模型页。") }
             return
         }
+        target.post { target.evaluateJavascript(script, null) }
+    }
+
+    fun runModelCommand(expression: String) {
+        val target = webView ?: run {
+            scope.launch { snackbarHostState.showSnackbar("3D 渲染视图尚未创建，请返回后重新进入模型页。") }
+            return
+        }
+        val script = """
+            (function(){
+              const report=(ok,message)=>{
+                try{if(window.AndroidBridge&&typeof window.AndroidBridge.onCommandResult==='function')window.AndroidBridge.onCommandResult(!!ok,String(message||''));}
+                catch(bridgeError){console.error('Native command callback failed',bridgeError);}
+              };
+              try{
+                const api=window.Mobile3DStudio;
+                if(!api){report(false,'3D 引擎接口尚未加载，请稍后重试。');return;}
+                Promise.resolve($expression).then(result=>{
+                  if(result===true)report(true,'模型生成完成。');
+                  else report(false,'模型生成未完成，请检查 WebGL 初始化状态和模型输入。');
+                }).catch(error=>report(false,error&&error.message?error.message:'模型生成时发生未知错误。'));
+              }catch(error){report(false,error&&error.message?error.message:'模型生成调用失败。');}
+            })();
+        """.trimIndent()
         target.post { target.evaluateJavascript(script, null) }
     }
 
@@ -128,6 +153,7 @@ fun Mobile3DStudioApp() {
         runCatching {
             val root = JSONObject(json)
             rendererReady = root.optBoolean("ready", false)
+            rendererError = root.optString("error").takeIf { it.isNotBlank() && it != "null" }
             canUndo = root.optBoolean("canUndo", false)
             val list = root.optJSONArray("objects")
             val nextObjects = buildList {
@@ -184,6 +210,14 @@ fun Mobile3DStudioApp() {
         selectedTransform = selectedTransform,
         canUndo = canUndo,
         rendererReady = rendererReady,
+        rendererError = rendererError,
+        onEngineMessage = { success, message ->
+            if (!success && !rendererReady) rendererError = message
+            if (success && rendererReady) rendererError = null
+            if (!success || message.isNotBlank()) {
+                scope.launch { snackbarHostState.showSnackbar(message.ifBlank { if (success) "模型生成完成。" else "模型生成失败。" }) }
+            }
+        },
         onWebViewReady = { readyView ->
             if (webView !== readyView) webView = readyView
         },
@@ -220,12 +254,16 @@ fun Mobile3DStudioApp() {
         onPointInputChange = { pointInput = it },
         onGenerateModel = {
             if (!rendererReady) {
-                scope.launch { snackbarHostState.showSnackbar("3D 引擎仍在初始化") }
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        rendererError ?: "3D 引擎尚未就绪，请稍候再试；如果持续不就绪，请重新进入模型页。"
+                    )
+                }
             } else {
                 when (selectedModelType) {
-                    MODEL_FRAGMENT -> runJs("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})")
-                    MODEL_CUT -> runJs("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})")
-                    MODEL_POKER -> runJs("window.Mobile3DStudio.addPoker()")
+                    MODEL_FRAGMENT -> runModelCommand("window.Mobile3DStudio.addIrregularDice(${pointInput.toIntOrNull() ?: 9})")
+                    MODEL_CUT -> runModelCommand("window.Mobile3DStudio.addCutDice(${pointInput.toIntOrNull() ?: 9})")
+                    MODEL_POKER -> runModelCommand("window.Mobile3DStudio.addPoker()")
                 }
             }
         },
