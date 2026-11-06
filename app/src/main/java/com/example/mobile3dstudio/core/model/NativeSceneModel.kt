@@ -28,5 +28,7 @@ data class NativeSceneModel(
     /** Stable per-object seed for the irregular surface and random cut planes. */
     val seed: Int = id.hashCode(),
     /** Transform restored by the workbench's Default button. */
-    val defaultTransform: NativeTransform = transform
+    val defaultTransform: NativeTransform = transform,
+    /** Private app-storage path for an imported GLB file. */
+    val sourceFilePath: String? = null
 )
